@@ -572,6 +572,11 @@ HBO溫馨家庭,tvbus://5aBHDtkysiAPD6ssRqqVaYvnAUDL6K5yz3iqKY5h9sC7rhP5R5aw13jY
 天映频道,tvbus://5MT2AWWncgyQ3umNFka81RsHW2BpFfRirGTY7UUrMjS3BNAE7FVat3369XGRv
 天映频道,mitv://fccseuro.pvbox.live:18912/5d650486000c7ef46a640da928dbefc1#mitv://fccseuro.pvbox.live:18912/5e64a27b000b40186caada2a41021861#mitv://fccsovh.pvbox.live:18912/5d650486000c7ef46a640da928dbefc1
 天映经典,mitv://fccseuro.pvbox.live:18912/5d650488000e67a1df9eba9288b40109#mitv://fccsovh.pvbox.live:18912/5d650488000e67a1df9eba9288b40109
+天映频道,p5p://user3.shusongw.mobi:16871/5ecfb28400055004967ec4954fccfd7f
+天映频道,p5p://livefccs.looktvb.com:16888/5f460023000982e5042dc6e7cd7e8f56
+天映经典,http://ikands.xyz/dl/ua?token=1216154892&vkeys=dmlkJTNEZm1pbGl2ZSUyM2lkJTNEdHlqZA__
+天映经典,p5p://user3.shusongw.mobi:16871/5f2f935d000124722250d0dff4066d74
+天映经典,P2p://sunboss.selfip.com:6358/5f5535130002f91615285e97947b882f
 欢喜台,tvbus://5v8tSLF5YnYKZAucZVHLGbkMhgMm55D65iT3RtEVGojVqkHT96bezX8c3HJsG
 AOD,tvbus://5pkpN6REsdX5r21CDpcskP8V36wFx1omUXXVSwj3xnUXZicpSbmBWxpUnNDrH
 BOO,tvbus://6Dahh3fv9kyywCtddn4N6K5JXW63LckyBZahWY9CyEEcFoQqadRfwdJ6obwL8
@@ -583,3 +588,8 @@ TVB 经典台,tvbus://6R9gMZRtc4q7cXDSAunNjupchquEeGcHaGtTVZLpjF3hiohqzQ2VBpyk64
 爆谷台,tvbus://5TyTrVuP5Ux1Wnngj1vBqZvtBEk6EdWymRxHcXa3ppqn4yZK1gk12R9rwnifG
 凤凰电影,tvbus://6MGQVckYd66tyyBeCyaM9Bu4hcjQA8tZggo2ky9zahSQSrwfAwC6FiXQhQwRN
 電影第一台,tvbus://5pjpAm5P6gk4ecjv1LZnLwiUu8RYSHS1UFUAdRp45rrHrRXR5Bp5i64fd8rMF
+電影1,#genre#
+极限电影台,P2p://ns1.hellotvvod.com:9906/5f8984c100059f812ec4b1c42bbd637b.ts
+极限电影台,P2p://147.135.39.171:9906/5f36af0b000596f594e332a916d829bd
+极限电影台,tvbus://4YLeJUQrUNZmxGFLXCUwfyCG76knBfnkGPAz4SVy9kAEjdZsK3
+极限电影台,tvbus://3iJYHQLExJhHW2586ZAL4i5qG25nZqbQZHg4fvaiUQA4BUmxJJ
