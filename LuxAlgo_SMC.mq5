@@ -76,6 +76,10 @@ input bool     InpShowStructure      = true;   // 是否绘制 BOS/CHoCH
 input bool     InpShowChoCh          = true;   // 是否显示 CHoCH 标签
 input bool     InpShowSwingLabels    = false;  // 是否显示 HH/HL/LH/LL 标签
 input bool     InpShowEqualLevels    = true;   // 是否检测 EQH/EQL
+input int      InpEqualPivotDepth    = 2;      // EQH/EQL 回溯多少个摆动点进行比较
+input int      InpEqualDetectionBars = 30;     // EQH/EQL 两次摆动之间允许的最大 K 线数
+input int      InpAtrPeriod          = 200;    // ATR 过滤周期（用于订单块尺寸过滤）
+input double   InpMinObAtrMultiplier = 0.5;    // 订单块最小尺寸 = ATR * 倍数，小于该值不记录
 input bool     InpShowOrderBlocks    = true;   // 是否绘制订单块
 input bool     InpShowFVG            = true;   // 是否绘制 FVG 区域
 input int      InpMaxZones           = 3;      // 每类最多保留的区域数量
@@ -126,9 +130,13 @@ int        gEqualLabelId        = 0;
 int        gSwingLabelId        = 0;
 int        gNextZoneId          = 0;
 long       gLastBarSeconds      = 0;
+int        gAtrHandle           = INVALID_HANDLE;   // ATR 指标句柄（订单块过滤）
 
 Zone       gObZones[];
 Zone       gFvgZones[];
+SwingPoint gSwingHighHistory[];   // 记录历史摆动高点
+SwingPoint gSwingLowHistory[];    // 记录历史摆动低点
+double     gAtrValues[];          // ATR 数组缓存
 
 //--- helpers -----------------------------------------------------------------
 void ResetSwingPoint(SwingPoint &p)
@@ -159,6 +167,9 @@ void ResetState()
    ResetSwingPoint(gPrevSwingLow);
    ArrayResize(gObZones,0);
    ArrayResize(gFvgZones,0);
+   ArrayResize(gSwingHighHistory,0);
+   ArrayResize(gSwingLowHistory,0);
+   ArrayResize(gAtrValues,0);
   }
 
 string BuildName(const string prefix,const int id)
@@ -226,40 +237,13 @@ void DrawTextLabel(const string prefix,const int id,const datetime t,const doubl
    ObjectSetString(0,name,OBJPROP_TEXT,text);
   }
 
-void DrawEqualMarker(const string prefix,const int id,const datetime t,const double price,const color clr,const bool highLevel)
+void DrawStructureLine(const string prefix,const int id,const datetime fromTime,const datetime toTime,const double price,const color clr)
   {
    string name = BuildName(prefix,id);
    if(ObjectFind(0,name)<0)
-      ObjectCreate(0,name,OBJ_TEXT,0,t,price);
-   ObjectSetInteger(0,name,OBJPROP_TIME,0,t);
-   ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
-   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
-   ObjectSetInteger(0,name,OBJPROP_FONTSIZE,8);
-   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
-   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
-   ObjectSetInteger(0,name,OBJPROP_ANCHOR,highLevel?ANCHOR_LOWER:ANCHOR_UPPER);
-   ObjectSetString(0,name,OBJPROP_TEXT,"·");
-  }
-
-void DrawDottedLine(const string prefix,const int id,const datetime fromTime,const datetime eventTime,const double price,const color clr)
-  {
-   string name = BuildName(prefix,id);
-   if(ObjectFind(0,name)<0)
-      ObjectCreate(0,name,OBJ_TREND,0,fromTime,price,eventTime,price);
-   datetime rightBound = eventTime;
-   long barSeconds = gLastBarSeconds;
-   if(barSeconds<=0)
-      barSeconds = PeriodSeconds(_Period);
-   if(barSeconds<=0)
-      barSeconds = 60;
-   if(InpExtendRightBars>0)
-     {
-      datetime candidate = eventTime + (datetime)(barSeconds*InpExtendRightBars);
-      if(candidate>rightBound)
-         rightBound = candidate;
-     }
+      ObjectCreate(0,name,OBJ_TREND,0,fromTime,price,toTime,price);
    ObjectSetInteger(0,name,OBJPROP_TIME,0,fromTime);
-   ObjectSetInteger(0,name,OBJPROP_TIME,1,rightBound);
+   ObjectSetInteger(0,name,OBJPROP_TIME,1,toTime);
    ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
    ObjectSetDouble(0,name,OBJPROP_PRICE,1,price);
    ObjectSetInteger(0,name,OBJPROP_STYLE,STYLE_DOT);
@@ -377,7 +361,67 @@ void RegisterSwingLabel(const SwingPoint &pt,const bool isHigh,const double prev
    else
       text = (pt.price>prevPrice) ? "HL" : "LL";
    color clr = isHigh ? InpBearStructureColor : InpBullStructureColor;
-   DrawTextLabel("SMC_SWING",gSwingLabelId,pt.time,pt.price,clr,text,isHigh?ANCHOR_LOWER:ANCHOR_UPPER);
+  DrawTextLabel("SMC_SWING",gSwingLabelId,pt.time,pt.price,clr,text,isHigh?ANCHOR_LOWER:ANCHOR_UPPER);
+  }
+
+//--- 存储摆动点历史，便于 EQH/EQL 检测
+void StoreSwingHistory(SwingPoint &history[],const SwingPoint &pt)
+  {
+   int size = ArraySize(history);
+   ArrayResize(history,size+1);
+   history[size] = pt;
+   int maxKeep = MathMax(InpEqualPivotDepth*3,10);
+   if(ArraySize(history)>maxKeep)
+     {
+      int shift = ArraySize(history)-maxKeep;
+      for(int i=0;i<maxKeep;i++)
+         history[i] = history[i+shift];
+      ArrayResize(history,maxKeep);
+     }
+  }
+
+//--- 检查是否形成等高结构
+void CheckEqualHigh(const SwingPoint &current,const int rates_total)
+  {
+   if(!InpShowEqualLevels)
+      return;
+   double tolerance = InpMinEQTicks * _Point;
+   int comparisons = 0;
+   for(int i=ArraySize(gSwingHighHistory)-1; i>=0 && comparisons<InpEqualPivotDepth; --i)
+     {
+      const SwingPoint &candidate = gSwingHighHistory[i];
+      if(InpEqualDetectionBars>0 && (current.index - candidate.index) > InpEqualDetectionBars)
+         continue;
+      double diff = MathAbs(candidate.price - current.price);
+      if(diff <= tolerance)
+        {
+         RegisterEqualLevel(candidate,current,true,rates_total);
+         break;
+        }
+      ++comparisons;
+     }
+  }
+
+//--- 检查是否形成等低结构
+void CheckEqualLow(const SwingPoint &current,const int rates_total)
+  {
+   if(!InpShowEqualLevels)
+      return;
+   double tolerance = InpMinEQTicks * _Point;
+   int comparisons = 0;
+   for(int i=ArraySize(gSwingLowHistory)-1; i>=0 && comparisons<InpEqualPivotDepth; --i)
+     {
+      const SwingPoint &candidate = gSwingLowHistory[i];
+      if(InpEqualDetectionBars>0 && (current.index - candidate.index) > InpEqualDetectionBars)
+         continue;
+      double diff = MathAbs(candidate.price - current.price);
+      if(diff <= tolerance)
+        {
+         RegisterEqualLevel(candidate,current,false,rates_total);
+         break;
+        }
+      ++comparisons;
+     }
   }
 
 //--- 记录等高/等低结构并同步缓冲区
@@ -386,16 +430,17 @@ void RegisterEqualLevel(const SwingPoint &first,const SwingPoint &second,const b
    ++gEqualLabelId;
    color clr = highLevel ? InpEqualHighColor : InpEqualLowColor;
    DrawTextLabel("SMC_EQ",gEqualLabelId,second.time,second.price,clr,highLevel?"EQH":"EQL",highLevel?ANCHOR_UPPER:ANCHOR_LOWER);
-   DrawEqualMarker("SMC_EQM",gEqualLabelId,second.time,second.price,clr,highLevel);
    double levelPrice = second.price;
    if(highLevel)
      {
+      SetBufferValue(gEqualHighBuffer,rates_total,first.index,levelPrice);
       SetBufferValue(gEqualHighBuffer,rates_total,second.index,levelPrice);
       gLastEqualHighPrice = levelPrice;
       gLastEqualHighIndex = second.index;
      }
    else
      {
+      SetBufferValue(gEqualLowBuffer,rates_total,first.index,levelPrice);
       SetBufferValue(gEqualLowBuffer,rates_total,second.index,levelPrice);
       gLastEqualLowPrice = levelPrice;
       gLastEqualLowIndex = second.index;
@@ -410,12 +455,13 @@ void MarkStructure(const SwingPoint &pivot,const datetime eventTime,const bool b
    ++gStructureLabelId;
    color clr = bullish ? InpBullStructureColor : InpBearStructureColor;
    string text = choch?"CHoCH":"BOS";
-   DrawTextLabel("SMC_STR",gStructureLabelId,eventTime,pivot.price,clr,text,bullish?ANCHOR_LOWER:ANCHOR_UPPER);
-   DrawDottedLine("SMC_STR",gStructureLabelId,pivot.time,eventTime,pivot.price,clr);
+   datetime labelTime = pivot.time + (eventTime - pivot.time)/2;
+   DrawStructureLine("SMC_STRLINE",gStructureLabelId,pivot.time,eventTime,pivot.price,clr);
+   DrawTextLabel("SMC_STRLBL",gStructureLabelId,labelTime,pivot.price,clr,text,bullish?ANCHOR_LOWER:ANCHOR_UPPER);
   }
 
 //--- 根据最新结构突破生成订单块
-void AddOrderBlock(const int chronoIndex,const bool bullish,const double &opens[],const double &closes[],const datetime &times[],const int rates_total)
+void AddOrderBlock(const int chronoIndex,const bool bullish,const double &opens[],const double &closes[],const datetime &times[],const double &atrValues[],const int rates_total)
   {
    if(!InpShowOrderBlocks)
       return;
@@ -429,11 +475,15 @@ void AddOrderBlock(const int chronoIndex,const bool bullish,const double &opens[
          z.bullish = true;
          z.startTime = times[idx];
          z.endTime = 0;
-         z.extendBars = 0;
+         z.extendBars = InpExtendRightBars;
          z.mitigated = false;
          z.id = gNextZoneId++;
          z.top = MathMax(opens[idx],closes[idx]);
          z.bottom = MathMin(opens[idx],closes[idx]);
+         double zoneSize = MathAbs(z.top - z.bottom);             // 计算订单块实体高度
+         double atrValue = (idx<ArraySize(atrValues)) ? atrValues[idx] : 0.0; // 取对应 ATR
+         if(atrValue>0 && zoneSize < atrValue*InpMinObAtrMultiplier)         // 如果过小则忽略
+            continue;
          PushZone(gObZones,z,"OB_");
          SetBufferValue(gBullishOBHighBuffer,rates_total,chronoIndex,z.top);
          SetBufferValue(gBullishOBLowBuffer,rates_total,chronoIndex,z.bottom);
@@ -445,11 +495,15 @@ void AddOrderBlock(const int chronoIndex,const bool bullish,const double &opens[
          z.bullish = false;
          z.startTime = times[idx];
          z.endTime = 0;
-         z.extendBars = 0;
+         z.extendBars = InpExtendRightBars;
          z.mitigated = false;
          z.id = gNextZoneId++;
          z.top = MathMax(opens[idx],closes[idx]);
          z.bottom = MathMin(opens[idx],closes[idx]);
+         double zoneSize = MathAbs(z.top - z.bottom);
+         double atrValue = (idx<ArraySize(atrValues)) ? atrValues[idx] : 0.0;
+         if(atrValue>0 && zoneSize < atrValue*InpMinObAtrMultiplier)
+            continue;
          PushZone(gObZones,z,"OB_");
          SetBufferValue(gBearishOBHighBuffer,rates_total,chronoIndex,z.top);
          SetBufferValue(gBearishOBLowBuffer,rates_total,chronoIndex,z.bottom);
@@ -493,21 +547,28 @@ void AddFvg(const int chronoIndex,const bool bullish,const double top,const doub
   }
 
 //--- 更新订单块是否被回测
-void UpdateOrderBlocks(const double high,const double low)
+void UpdateOrderBlocks(const double high,const double low,const double close)
   {
    for(int i=ArraySize(gObZones)-1;i>=0;--i)
      {
-      if(gObZones[i].mitigated)
-         continue;
+      bool remove = false;
       if(gObZones[i].bullish)
         {
          if(low <= gObZones[i].top && high >= gObZones[i].bottom)
             gObZones[i].mitigated = true;
+         if(close < gObZones[i].bottom)
+            remove = true;
         }
       else
         {
          if(high >= gObZones[i].bottom && low <= gObZones[i].top)
             gObZones[i].mitigated = true;
+         if(close > gObZones[i].top)
+            remove = true;
+        }
+      if(remove)
+        {
+         RemoveZone(gObZones,i,"OB_");
         }
      }
   }
@@ -597,6 +658,14 @@ int OnInit()
    // 指定输出小数位与当前品种一致
    IndicatorSetInteger(INDICATOR_DIGITS,_Digits);
 
+   // 创建 ATR 指标句柄，用于后续订单块尺寸过滤
+   gAtrHandle = iATR(_Symbol,_Period,InpAtrPeriod);
+   if(gAtrHandle==INVALID_HANDLE)
+     {
+      Print("无法创建 ATR 句柄，错误码=",GetLastError());
+      return(INIT_FAILED);
+     }
+
    // 依次配置所有 16 个缓冲区，保证数据窗口顺序与规范一致
    ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBosBuffer,"Bullish BOS",InpBullStructureColor);      // 多头结构突破
    ConfigureBuffer(BUFFER_BEARISH_BOS,gBearishBosBuffer,"Bearish BOS",InpBearStructureColor);      // 空头结构突破
@@ -624,15 +693,14 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    // 删除结构相关的文字与虚线，避免在移除指标后残留
-   DeleteObjectByPrefix("SMC_STR");
+   DeleteObjectByPrefix("SMC_STRLINE");
+   DeleteObjectByPrefix("SMC_STRLBL");
    // 删除等高/等低文本标签
    DeleteObjectByPrefix("SMC_EQ");
    // 删除等高/等低辅助矩形或线段（旧版本遗留）
    DeleteObjectByPrefix("SMC_EQR");
    DeleteObjectByPrefix("SMC_EQD");
    DeleteObjectByPrefix("SMC_EQL");
-   // 删除等高/等低的标记点
-   DeleteObjectByPrefix("SMC_EQM");
    // 删除摆动点标签
    DeleteObjectByPrefix("SMC_SWING");
    // 删除流动性抓取提示
@@ -641,6 +709,12 @@ void OnDeinit(const int reason)
    DeleteObjectByPrefix("OB_");
    // 删除 FVG 矩形
    DeleteObjectByPrefix("FVG_");
+   // 释放 ATR 指标资源
+   if(gAtrHandle!=INVALID_HANDLE)
+     {
+      IndicatorRelease(gAtrHandle);
+      gAtrHandle = INVALID_HANDLE;
+     }
   }
 
 //--- main calculation -------------------------------------------------------
@@ -671,6 +745,8 @@ int OnCalculate(const int rates_total,
    ArrayResize(opens,rates_total);
    ArrayResize(closes,rates_total);
    ArrayResize(times,rates_total);
+   ArraySetAsSeries(gAtrValues,false);
+   ArrayResize(gAtrValues,rates_total);
 
    // 复制数据并将索引转换为从旧到新的顺序
    for(int c=0;c<rates_total;++c)
@@ -681,6 +757,24 @@ int OnCalculate(const int rates_total,
       opens[c]  = rates[idx].open;                       // 保存开盘价
       closes[c] = rates[idx].close;                      // 保存收盘价
       times[c]  = rates[idx].time;                       // 保存时间戳
+      gAtrValues[c] = 0.0;                               // 预设 ATR 值
+     }
+
+   if(gAtrHandle!=INVALID_HANDLE)
+     {
+      double atrRaw[];
+      ArraySetAsSeries(atrRaw,true);
+      int copied = CopyBuffer(gAtrHandle,0,0,rates_total,atrRaw);
+      if(copied>0)
+        {
+         for(int c=0;c<rates_total && c<copied;++c)
+           {
+            int target = rates_total-1-c;         // 将最新 ATR 映射到数组末尾（对应最新 K 线）
+            gAtrValues[target] = atrRaw[c];       // 其余索引依次向前排布
+           }
+        }
+      else
+         ArrayInitialize(gAtrValues,0.0);
      }
 
    int lastClosed = rates_total-2;
@@ -700,12 +794,12 @@ int OnCalculate(const int rates_total,
    if(prev_calculated==0)
      {
       ResetState();
-      DeleteObjectByPrefix("SMC_STR");
+      DeleteObjectByPrefix("SMC_STRLINE");
+      DeleteObjectByPrefix("SMC_STRLBL");
       DeleteObjectByPrefix("SMC_EQ");
       DeleteObjectByPrefix("SMC_EQR");
       DeleteObjectByPrefix("SMC_EQD");
       DeleteObjectByPrefix("SMC_EQL");
-      DeleteObjectByPrefix("SMC_EQM");
       DeleteObjectByPrefix("SMC_SWING");
       DeleteObjectByPrefix("SMC_LG");
       DeleteObjectByPrefix("OB_");
@@ -725,37 +819,33 @@ int OnCalculate(const int rates_total,
       int pivot = chrono - InpSwingLength;
       if(pivot>=0)
         {
-         if(IsSwingHigh(highs,pivot,InpSwingLength,rates_total))
-           {
-            gPrevSwingHigh = gLastSwingHigh;
-            gLastSwingHigh.index = pivot;
-            gLastSwingHigh.price = highs[pivot];
-            gLastSwingHigh.time  = times[pivot];
-            double prevPrice = (gPrevSwingHigh.index>=0) ? gPrevSwingHigh.price : 0.0;
-            RegisterSwingLabel(gLastSwingHigh,true,prevPrice);
-            if(gPrevSwingHigh.index>=0 && InpShowEqualLevels)
-              {
-               double diff = MathAbs(gPrevSwingHigh.price - gLastSwingHigh.price);
-               if(diff <= InpMinEQTicks*_Point)
-                  RegisterEqualLevel(gPrevSwingHigh,gLastSwingHigh,true,rates_total);
-              }
-           }
-         if(IsSwingLow(lows,pivot,InpSwingLength,rates_total))
-           {
-            gPrevSwingLow = gLastSwingLow;
-            gLastSwingLow.index = pivot;
-            gLastSwingLow.price = lows[pivot];
-            gLastSwingLow.time  = times[pivot];
-            double prevPrice = (gPrevSwingLow.index>=0) ? gPrevSwingLow.price : 0.0;
-            RegisterSwingLabel(gLastSwingLow,false,prevPrice);
-            if(gPrevSwingLow.index>=0 && InpShowEqualLevels)
-              {
-               double diff = MathAbs(gPrevSwingLow.price - gLastSwingLow.price);
-               if(diff <= InpMinEQTicks*_Point)
-                  RegisterEqualLevel(gPrevSwingLow,gLastSwingLow,false,rates_total);
-              }
-           }
-        }
+        if(IsSwingHigh(highs,pivot,InpSwingLength,rates_total))
+          {
+           gPrevSwingHigh = gLastSwingHigh;
+           SwingPoint newHigh;
+           newHigh.index = pivot;
+           newHigh.price = highs[pivot];
+           newHigh.time  = times[pivot];
+           gLastSwingHigh = newHigh;
+           double prevPrice = (gPrevSwingHigh.index>=0) ? gPrevSwingHigh.price : 0.0;
+           RegisterSwingLabel(newHigh,true,prevPrice);
+           CheckEqualHigh(newHigh,rates_total);
+           StoreSwingHistory(gSwingHighHistory,newHigh);
+          }
+        if(IsSwingLow(lows,pivot,InpSwingLength,rates_total))
+          {
+           gPrevSwingLow = gLastSwingLow;
+           SwingPoint newLow;
+           newLow.index = pivot;
+           newLow.price = lows[pivot];
+           newLow.time  = times[pivot];
+           gLastSwingLow = newLow;
+           double prevPrice = (gPrevSwingLow.index>=0) ? gPrevSwingLow.price : 0.0;
+           RegisterSwingLabel(newLow,false,prevPrice);
+           CheckEqualLow(newLow,rates_total);
+           StoreSwingHistory(gSwingLowHistory,newLow);
+          }
+       }
 
       double close = closes[chrono];
       double high  = highs[chrono];
@@ -772,7 +862,7 @@ int OnCalculate(const int rates_total,
          else
             SetBufferValue(gBullishBosBuffer,rates_total,chrono,gLastSwingHigh.price);
          MarkStructure(gLastSwingHigh,times[chrono],true,choch);
-         AddOrderBlock(chrono,true,opens,closes,times,rates_total);
+         AddOrderBlock(chrono,true,opens,closes,times,gAtrValues,rates_total);
          gLastBrokenHighSource = gLastSwingHigh.index;
         }
       if(gLastSwingLow.index>=0 && close<gLastSwingLow.price && gLastSwingLow.index!=gLastBrokenLowSource)
@@ -786,7 +876,7 @@ int OnCalculate(const int rates_total,
          else
             SetBufferValue(gBearishBosBuffer,rates_total,chrono,gLastSwingLow.price);
          MarkStructure(gLastSwingLow,times[chrono],false,choch);
-         AddOrderBlock(chrono,false,opens,closes,times,rates_total);
+         AddOrderBlock(chrono,false,opens,closes,times,gAtrValues,rates_total);
          gLastBrokenLowSource = gLastSwingLow.index;
         }
 
@@ -815,7 +905,7 @@ int OnCalculate(const int rates_total,
             AddFvg(chrono,false,low2,highs[chrono],times[chrono-2],times,rates_total);
         }
 
-      UpdateOrderBlocks(high,low);
+      UpdateOrderBlocks(high,low,close);
       UpdateFvgs(high,low);
 
       gLastProcessedIndex = chrono;
