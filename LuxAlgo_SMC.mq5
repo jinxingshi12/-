@@ -86,6 +86,16 @@ input bool     InpShowFairValueGaps       = false;
 input bool     InpAutoFVGThreshold        = true;
 input ENUM_TIMEFRAMES InpFVGTimeframe     = PERIOD_CURRENT;
 input int      InpFVGExtend               = 1;
+input int      InpDataWindowDelaySeconds  = 30;
+
+// Style colors (approximation of TradingView palette)
+input color    InpBullStructureColor      = clrLimeGreen;
+input color    InpBearStructureColor      = clrTomato;
+input color    InpEqualLevelColor         = clrDodgerBlue;
+input color    InpBullOrderBlockColor     = clrCornflowerBlue;
+input color    InpBearOrderBlockColor     = clrCrimson;
+input color    InpBullFVGColor            = clrMediumSeaGreen;
+input color    InpBearFVGColor            = clrLightSalmon;
 
 // Indicator buffers
 double        gBullishBOSBuffer[];
@@ -118,6 +128,13 @@ double      gLastEqualHigh = 0.0;
 int         gLastEqualHighIndex = -1;
 double      gLastEqualLow = 0.0;
 int         gLastEqualLowIndex = -1;
+double      gPointSize = 0.0;
+
+double      gLatestValues[16];
+int         gLatestIndex[16];
+bool        gLatestHasValue[16];
+datetime    gLastDataUpdateTime = 0;
+int         gLastBufferSize     = 0;
 
 //+------------------------------------------------------------------+
 //| Helper functions                                                |
@@ -192,33 +209,6 @@ bool StartOfBearishLeg(int prevLeg, int currLeg)
    return (prevLeg == LEG_BULLISH && currLeg == LEG_BEARISH);
   }
 
-void ResizeBuffer(double &buffer[],const int size)
-  {
-   ArrayResize(buffer,size);
-   ArrayInitialize(buffer,EMPTY_VALUE);
-   ArraySetAsSeries(buffer,true);
-  }
-
-void ResetBuffers(const int rates_total)
-  {
-   ResizeBuffer(gBullishBOSBuffer,rates_total);
-   ResizeBuffer(gBearishBOSBuffer,rates_total);
-   ResizeBuffer(gBullishChoChBuffer,rates_total);
-   ResizeBuffer(gBearishChoChBuffer,rates_total);
-   ResizeBuffer(gBullishOBHighBuffer,rates_total);
-   ResizeBuffer(gBullishOBLowBuffer,rates_total);
-   ResizeBuffer(gBearishOBHighBuffer,rates_total);
-   ResizeBuffer(gBearishOBLowBuffer,rates_total);
-   ResizeBuffer(gBullishFVGHighBuffer,rates_total);
-   ResizeBuffer(gBullishFVGLowBuffer,rates_total);
-   ResizeBuffer(gBearishFVGHighBuffer,rates_total);
-   ResizeBuffer(gBearishFVGLowBuffer,rates_total);
-   ResizeBuffer(gEqualHighsBuffer,rates_total);
-   ResizeBuffer(gEqualLowsBuffer,rates_total);
-   ResizeBuffer(gLiquidityGrabHighBuffer,rates_total);
-   ResizeBuffer(gLiquidityGrabLowBuffer,rates_total);
-  }
-
 void ResetState()
   {
    gSwingHigh.Reset();
@@ -231,6 +221,189 @@ void ResetState()
    gLastEqualHighIndex = -1;
    gLastEqualLow       = 0.0;
    gLastEqualLowIndex  = -1;
+  }
+
+void ResetLatestCache()
+  {
+   for(int i=0;i<16;++i)
+     {
+      gLatestValues[i]   = 0.0;
+      gLatestIndex[i]    = -1;
+      gLatestHasValue[i] = false;
+     }
+  }
+
+void EnsureBufferSize(double &buffer[],const int newSize)
+  {
+   int currentSize = ArraySize(buffer);
+   if(currentSize == newSize)
+      return;
+
+   bool initialize = (currentSize == 0);
+   ArrayResize(buffer,newSize);
+   ArraySetAsSeries(buffer,true);
+
+   if(initialize)
+      ArrayInitialize(buffer,EMPTY_VALUE);
+   else if(newSize > currentSize)
+     {
+      for(int i=currentSize;i<newSize;++i)
+         buffer[i] = EMPTY_VALUE;
+     }
+  }
+
+void EnsureAllBuffers(const int rates_total)
+  {
+   if(gLastBufferSize == rates_total)
+      return;
+
+   EnsureBufferSize(gBullishBOSBuffer,rates_total);
+   EnsureBufferSize(gBearishBOSBuffer,rates_total);
+   EnsureBufferSize(gBullishChoChBuffer,rates_total);
+   EnsureBufferSize(gBearishChoChBuffer,rates_total);
+   EnsureBufferSize(gBullishOBHighBuffer,rates_total);
+   EnsureBufferSize(gBullishOBLowBuffer,rates_total);
+   EnsureBufferSize(gBearishOBHighBuffer,rates_total);
+   EnsureBufferSize(gBearishOBLowBuffer,rates_total);
+   EnsureBufferSize(gBullishFVGHighBuffer,rates_total);
+   EnsureBufferSize(gBullishFVGLowBuffer,rates_total);
+   EnsureBufferSize(gBearishFVGHighBuffer,rates_total);
+   EnsureBufferSize(gBearishFVGLowBuffer,rates_total);
+   EnsureBufferSize(gEqualHighsBuffer,rates_total);
+   EnsureBufferSize(gEqualLowsBuffer,rates_total);
+   EnsureBufferSize(gLiquidityGrabHighBuffer,rates_total);
+   EnsureBufferSize(gLiquidityGrabLowBuffer,rates_total);
+
+   gLastBufferSize = rates_total;
+  }
+
+void WriteBufferValue(const int bufferIndex,const int rates_total,const int chronologicalIndex,const double value)
+  {
+   switch(bufferIndex)
+     {
+      case BUFFER_BULLISH_BOS:            SetBufferValue(gBullishBOSBuffer,rates_total,chronologicalIndex,value);      break;
+      case BUFFER_BEARISH_BOS:            SetBufferValue(gBearishBOSBuffer,rates_total,chronologicalIndex,value);      break;
+      case BUFFER_BULLISH_CHOCH:          SetBufferValue(gBullishChoChBuffer,rates_total,chronologicalIndex,value);    break;
+      case BUFFER_BEARISH_CHOCH:          SetBufferValue(gBearishChoChBuffer,rates_total,chronologicalIndex,value);    break;
+      case BUFFER_BULLISH_OB_HIGH:        SetBufferValue(gBullishOBHighBuffer,rates_total,chronologicalIndex,value);   break;
+      case BUFFER_BULLISH_OB_LOW:         SetBufferValue(gBullishOBLowBuffer,rates_total,chronologicalIndex,value);    break;
+      case BUFFER_BEARISH_OB_HIGH:        SetBufferValue(gBearishOBHighBuffer,rates_total,chronologicalIndex,value);   break;
+      case BUFFER_BEARISH_OB_LOW:         SetBufferValue(gBearishOBLowBuffer,rates_total,chronologicalIndex,value);    break;
+      case BUFFER_BULLISH_FVG_HIGH:       SetBufferValue(gBullishFVGHighBuffer,rates_total,chronologicalIndex,value);  break;
+      case BUFFER_BULLISH_FVG_LOW:        SetBufferValue(gBullishFVGLowBuffer,rates_total,chronologicalIndex,value);   break;
+      case BUFFER_BEARISH_FVG_HIGH:       SetBufferValue(gBearishFVGHighBuffer,rates_total,chronologicalIndex,value);  break;
+      case BUFFER_BEARISH_FVG_LOW:        SetBufferValue(gBearishFVGLowBuffer,rates_total,chronologicalIndex,value);   break;
+      case BUFFER_EQ_HIGHS:               SetBufferValue(gEqualHighsBuffer,rates_total,chronologicalIndex,value);      break;
+      case BUFFER_EQ_LOWS:                SetBufferValue(gEqualLowsBuffer,rates_total,chronologicalIndex,value);       break;
+      case BUFFER_LIQUIDITY_GRAB_HIGH:    SetBufferValue(gLiquidityGrabHighBuffer,rates_total,chronologicalIndex,value); break;
+      case BUFFER_LIQUIDITY_GRAB_LOW:     SetBufferValue(gLiquidityGrabLowBuffer,rates_total,chronologicalIndex,value);  break;
+     }
+  }
+
+void RecordBufferValue(const int bufferIndex,const int chronologicalIndex,const double value)
+  {
+   if(bufferIndex < 0 || bufferIndex >= 16)
+      return;
+
+   gLatestValues[bufferIndex]    = value;
+   gLatestIndex[bufferIndex]     = chronologicalIndex;
+   gLatestHasValue[bufferIndex]  = true;
+  }
+
+void FlushLatestValues(const int rates_total)
+  {
+   for(int i=0;i<16;++i)
+     {
+      if(gLatestHasValue[i] && gLatestIndex[i] >= 0)
+         WriteBufferValue(i,rates_total,gLatestIndex[i],gLatestValues[i]);
+     }
+  }
+
+string BuildObjectName(const string prefix,const int index)
+  {
+   return prefix + "_" + IntegerToString(index);
+  }
+
+double PriceOffset(const double price,const bool above)
+  {
+   double offset = 6.0 * gPointSize;
+   if(offset == 0.0)
+      offset = 6.0 * SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+   return above ? price + offset : price - offset;
+  }
+
+void DrawStructureLabel(const string prefix,const int index,const datetime t,const double price,const color clr,const string text,const bool above)
+  {
+   string name = BuildObjectName(prefix,index);
+   double positionedPrice = PriceOffset(price,above);
+   if(ObjectFind(0,name) < 0)
+      ObjectCreate(0,name,OBJ_TEXT,0,t,positionedPrice);
+
+   ObjectSetInteger(0,name,OBJPROP_TIME,0,t);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,0,positionedPrice);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,name,OBJPROP_FONTSIZE,8);
+   ObjectSetInteger(0,name,OBJPROP_ANCHOR,above ? ANCHOR_LOWER : ANCHOR_UPPER);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+   ObjectSetString(0,name,OBJPROP_TEXT,text);
+  }
+
+void DrawStructureLine(const string prefix,const int index,const datetime fromTime,const datetime toTime,const double price,const color clr)
+  {
+   string name = BuildObjectName(prefix,index);
+   if(ObjectFind(0,name) < 0)
+      ObjectCreate(0,name,OBJ_TREND,0,fromTime,price,toTime,price);
+
+   ObjectSetInteger(0,name,OBJPROP_TIME,0,fromTime);
+   ObjectSetInteger(0,name,OBJPROP_TIME,1,toTime);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,1,price);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,name,OBJPROP_STYLE,STYLE_DOT);
+   ObjectSetInteger(0,name,OBJPROP_WIDTH,1);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_RAY_RIGHT,true);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+  }
+
+void DrawEqualLevel(const string prefix,const int index,const datetime startTime,const datetime currentTime,const double level,const string labelText,const color clr,const bool isHigh)
+  {
+   DrawStructureLine(prefix + "_LINE",index,startTime,currentTime,level,clr);
+   DrawStructureLabel(prefix + "_LBL",index,currentTime,level,clr,labelText,isHigh);
+  }
+
+void DrawRectangleZone(const string prefix,const int index,const datetime startTime,const datetime endTime,const double top,const double bottom,const color baseColor)
+  {
+   string name = BuildObjectName(prefix,index);
+   if(ObjectFind(0,name) < 0)
+      ObjectCreate(0,name,OBJ_RECTANGLE,0,startTime,top,endTime,bottom);
+
+   ObjectSetInteger(0,name,OBJPROP_TIME,0,startTime);
+   ObjectSetInteger(0,name,OBJPROP_TIME,1,endTime);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,0,top);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,1,bottom);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,ColorToARGB(baseColor,50));
+   ObjectSetInteger(0,name,OBJPROP_BACK,true);
+   ObjectSetInteger(0,name,OBJPROP_FILL,true);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+  }
+
+void DrawZoneLabel(const string prefix,const int index,const datetime t,const double price,const color clr,const string text)
+  {
+   string name = BuildObjectName(prefix,index);
+   if(ObjectFind(0,name) < 0)
+      ObjectCreate(0,name,OBJ_TEXT,0,t,price);
+
+   ObjectSetInteger(0,name,OBJPROP_TIME,0,t);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,name,OBJPROP_FONTSIZE,8);
+   ObjectSetInteger(0,name,OBJPROP_ANCHOR,ANCHOR_CENTER);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+   ObjectSetString(0,name,OBJPROP_TEXT,text);
   }
 
 void UpdatePivot(Pivot &ref,const double level,const datetime t,const int index)
@@ -280,25 +453,30 @@ int OnInit()
    IndicatorSetString(INDICATOR_SHORTNAME,"LuxAlgo SMC");
    IndicatorSetInteger(INDICATOR_DIGITS,_Digits);
 
-   ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBOSBuffer,DRAW_ARROW,clrLime,1,233,"Bullish BOS");
-   ConfigureBuffer(BUFFER_BEARISH_BOS,gBearishBOSBuffer,DRAW_ARROW,clrRed,1,234,"Bearish BOS");
-   ConfigureBuffer(BUFFER_BULLISH_CHOCH,gBullishChoChBuffer,DRAW_ARROW,clrSpringGreen,1,233,"Bullish CHoCH");
-   ConfigureBuffer(BUFFER_BEARISH_CHOCH,gBearishChoChBuffer,DRAW_ARROW,clrTomato,1,234,"Bearish CHoCH");
+   gPointSize = SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+   ResetLatestCache();
+   gLastDataUpdateTime = 0;
+   gLastBufferSize     = 0;
 
-   ConfigureBuffer(BUFFER_BULLISH_OB_HIGH,gBullishOBHighBuffer,DRAW_LINE,clrDeepSkyBlue,2,0,"Bullish OB High");
-   ConfigureBuffer(BUFFER_BULLISH_OB_LOW,gBullishOBLowBuffer,DRAW_LINE,clrDeepSkyBlue,2,0,"Bullish OB Low");
-   ConfigureBuffer(BUFFER_BEARISH_OB_HIGH,gBearishOBHighBuffer,DRAW_LINE,clrOrangeRed,2,0,"Bearish OB High");
-   ConfigureBuffer(BUFFER_BEARISH_OB_LOW,gBearishOBLowBuffer,DRAW_LINE,clrOrangeRed,2,0,"Bearish OB Low");
+   ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBOSBuffer,DRAW_NONE,InpBullStructureColor,1,0,"Bullish BOS");
+   ConfigureBuffer(BUFFER_BEARISH_BOS,gBearishBOSBuffer,DRAW_NONE,InpBearStructureColor,1,0,"Bearish BOS");
+   ConfigureBuffer(BUFFER_BULLISH_CHOCH,gBullishChoChBuffer,DRAW_NONE,InpBullStructureColor,1,0,"Bullish CHoCH");
+   ConfigureBuffer(BUFFER_BEARISH_CHOCH,gBearishChoChBuffer,DRAW_NONE,InpBearStructureColor,1,0,"Bearish CHoCH");
 
-   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFVGHighBuffer,DRAW_LINE,clrMediumSeaGreen,1,0,"Bullish FVG High");
-   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFVGLowBuffer,DRAW_LINE,clrMediumSeaGreen,1,0,"Bullish FVG Low");
-   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFVGHighBuffer,DRAW_LINE,clrCrimson,1,0,"Bearish FVG High");
-   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFVGLowBuffer,DRAW_LINE,clrCrimson,1,0,"Bearish FVG Low");
+   ConfigureBuffer(BUFFER_BULLISH_OB_HIGH,gBullishOBHighBuffer,DRAW_NONE,InpBullOrderBlockColor,1,0,"Bullish OB High");
+   ConfigureBuffer(BUFFER_BULLISH_OB_LOW,gBullishOBLowBuffer,DRAW_NONE,InpBullOrderBlockColor,1,0,"Bullish OB Low");
+   ConfigureBuffer(BUFFER_BEARISH_OB_HIGH,gBearishOBHighBuffer,DRAW_NONE,InpBearOrderBlockColor,1,0,"Bearish OB High");
+   ConfigureBuffer(BUFFER_BEARISH_OB_LOW,gBearishOBLowBuffer,DRAW_NONE,InpBearOrderBlockColor,1,0,"Bearish OB Low");
 
-   ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighsBuffer,DRAW_ARROW,clrDodgerBlue,1,234,"Equal Highs");
-   ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowsBuffer,DRAW_ARROW,clrDodgerBlue,1,233,"Equal Lows");
-   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLiquidityGrabHighBuffer,DRAW_ARROW,clrGold,1,234,"Liquidity Grab High");
-   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLiquidityGrabLowBuffer,DRAW_ARROW,clrGold,1,233,"Liquidity Grab Low");
+   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFVGHighBuffer,DRAW_NONE,InpBullFVGColor,1,0,"Bullish FVG High");
+   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFVGLowBuffer,DRAW_NONE,InpBullFVGColor,1,0,"Bullish FVG Low");
+   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFVGHighBuffer,DRAW_NONE,InpBearFVGColor,1,0,"Bearish FVG High");
+   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFVGLowBuffer,DRAW_NONE,InpBearFVGColor,1,0,"Bearish FVG Low");
+
+   ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighsBuffer,DRAW_NONE,InpEqualLevelColor,1,0,"Equal Highs");
+   ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowsBuffer,DRAW_NONE,InpEqualLevelColor,1,0,"Equal Lows");
+   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLiquidityGrabHighBuffer,DRAW_NONE,InpBearStructureColor,1,0,"Liquidity Grab High");
+   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLiquidityGrabLowBuffer,DRAW_NONE,InpBullStructureColor,1,0,"Liquidity Grab Low");
    return(INIT_SUCCEEDED);
   }
 
@@ -319,8 +497,7 @@ int OnCalculate(const int rates_total,
    if(rates_total <= MathMax(InpSwingLength,InpInternalLength)+5)
       return(0);
 
-   ResetBuffers(rates_total);
-
+   EnsureAllBuffers(rates_total);
    ArrayResize(gATRValue,rates_total);
 
    // Build chronological arrays
@@ -346,6 +523,12 @@ int OnCalculate(const int rates_total,
       timesChron[i]  = time[shift];
      }
 
+   if(prev_calculated==0)
+      ResetLatestCache();
+
+   if(gPointSize<=0.0)
+      gPointSize = SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+
    // ATR calculation (simple Wilder smoothing)
    double prevATR = 0.0;
    for(int i=0;i<rates_total;++i)
@@ -366,6 +549,8 @@ int OnCalculate(const int rates_total,
 
    int previousSwingLeg    = LEG_BEARISH;
    int previousInternalLeg = LEG_BEARISH;
+
+   datetime latestBarTime = timesChron[rates_total-1];
 
    ResetState();
 
@@ -405,13 +590,13 @@ int OnCalculate(const int rates_total,
         {
          gInternalHigh.crossed = true;
          gInternalTrend.bias   = 1;
-         SetBufferValue(gBullishBOSBuffer,rates_total,i,gInternalHigh.currentLevel);
+         RecordBufferValue(BUFFER_BULLISH_BOS,i,gInternalHigh.currentLevel);
         }
       if(gInternalLow.barIndex>=0 && !gInternalLow.crossed && closesChron[i] < gInternalLow.currentLevel)
         {
          gInternalLow.crossed = true;
          gInternalTrend.bias  = -1;
-         SetBufferValue(gBearishBOSBuffer,rates_total,i,gInternalLow.currentLevel);
+         RecordBufferValue(BUFFER_BEARISH_BOS,i,gInternalLow.currentLevel);
         }
 
       // Swing structures
@@ -420,10 +605,22 @@ int OnCalculate(const int rates_total,
          gSwingHigh.crossed = true;
          bool choch = (gSwingTrend.bias==-1);
          gSwingTrend.bias = 1;
+         double level     = gSwingHigh.currentLevel;
+         datetime pivotTime = timesChron[gSwingHigh.barIndex];
+         datetime eventTime = timesChron[i];
+
          if(choch)
-            SetBufferValue(gBullishChoChBuffer,rates_total,i,gSwingHigh.currentLevel);
+           {
+            RecordBufferValue(BUFFER_BULLISH_CHOCH,i,level);
+            DrawStructureLabel("SMC_CHOCH_BULL_LBL",i,eventTime,level,InpBullStructureColor,"CHoCH",true);
+            DrawStructureLine("SMC_CHOCH_BULL_LINE",gSwingHigh.barIndex,pivotTime,latestBarTime,level,InpBullStructureColor);
+           }
          else
-            SetBufferValue(gBullishBOSBuffer,rates_total,i,gSwingHigh.currentLevel);
+           {
+            RecordBufferValue(BUFFER_BULLISH_BOS,i,level);
+            DrawStructureLabel("SMC_BOS_BULL_LBL",i,eventTime,level,InpBullStructureColor,"BOS",true);
+            DrawStructureLine("SMC_BOS_BULL_LINE",gSwingHigh.barIndex,pivotTime,latestBarTime,level,InpBullStructureColor);
+           }
 
          if(InpShowOrderBlocks)
            {
@@ -440,8 +637,10 @@ int OnCalculate(const int rates_total,
                int minIndex = LowestIndex(lowsChron,startIndex,length);
                double obHigh = highsChron[maxIndex];
                double obLow  = lowsChron[minIndex];
-               SetBufferValue(gBullishOBHighBuffer,rates_total,i,obHigh);
-               SetBufferValue(gBullishOBLowBuffer,rates_total,i,obLow);
+               RecordBufferValue(BUFFER_BULLISH_OB_HIGH,i,obHigh);
+               RecordBufferValue(BUFFER_BULLISH_OB_LOW,i,obLow);
+               DrawRectangleZone("SMC_OB_BULL",startIndex,timesChron[startIndex],latestBarTime,obHigh,obLow,InpBullOrderBlockColor);
+               DrawZoneLabel("SMC_OB_BULL_TAG",startIndex,latestBarTime,0.5*(obHigh+obLow),InpBullOrderBlockColor,"Bull OB");
               }
            }
         }
@@ -451,10 +650,22 @@ int OnCalculate(const int rates_total,
          gSwingLow.crossed = true;
          bool choch = (gSwingTrend.bias==1);
          gSwingTrend.bias = -1;
+         double level      = gSwingLow.currentLevel;
+         datetime pivotTime = timesChron[gSwingLow.barIndex];
+         datetime eventTime = timesChron[i];
+
          if(choch)
-            SetBufferValue(gBearishChoChBuffer,rates_total,i,gSwingLow.currentLevel);
+           {
+            RecordBufferValue(BUFFER_BEARISH_CHOCH,i,level);
+            DrawStructureLabel("SMC_CHOCH_BEAR_LBL",i,eventTime,level,InpBearStructureColor,"CHoCH",false);
+            DrawStructureLine("SMC_CHOCH_BEAR_LINE",gSwingLow.barIndex,pivotTime,latestBarTime,level,InpBearStructureColor);
+           }
          else
-            SetBufferValue(gBearishBOSBuffer,rates_total,i,gSwingLow.currentLevel);
+           {
+            RecordBufferValue(BUFFER_BEARISH_BOS,i,level);
+            DrawStructureLabel("SMC_BOS_BEAR_LBL",i,eventTime,level,InpBearStructureColor,"BOS",false);
+            DrawStructureLine("SMC_BOS_BEAR_LINE",gSwingLow.barIndex,pivotTime,latestBarTime,level,InpBearStructureColor);
+           }
 
          if(InpShowOrderBlocks)
            {
@@ -471,8 +682,10 @@ int OnCalculate(const int rates_total,
                int minIndex = LowestIndex(lowsChron,startIndex,length);
                double obHigh = highsChron[maxIndex];
                double obLow  = lowsChron[minIndex];
-               SetBufferValue(gBearishOBHighBuffer,rates_total,i,obHigh);
-               SetBufferValue(gBearishOBLowBuffer,rates_total,i,obLow);
+               RecordBufferValue(BUFFER_BEARISH_OB_HIGH,i,obHigh);
+               RecordBufferValue(BUFFER_BEARISH_OB_LOW,i,obLow);
+               DrawRectangleZone("SMC_OB_BEAR",startIndex,timesChron[startIndex],latestBarTime,obHigh,obLow,InpBearOrderBlockColor);
+               DrawZoneLabel("SMC_OB_BEAR_TAG",startIndex,latestBarTime,0.5*(obHigh+obLow),InpBearOrderBlockColor,"Bear OB");
               }
            }
         }
@@ -482,14 +695,16 @@ int OnCalculate(const int rates_total,
       bool equalLowDetected  = false;
       if(i>=InpEqualLength && gSwingHigh.barIndex>=0 && MathAbs(highsChron[i]-gSwingHigh.currentLevel) <= InpEqualThreshold*gATRValue[i])
         {
-         SetBufferValue(gEqualHighsBuffer,rates_total,i,gSwingHigh.currentLevel);
+         RecordBufferValue(BUFFER_EQ_HIGHS,i,gSwingHigh.currentLevel);
+         DrawEqualLevel("SMC_EQ_HIGH",gSwingHigh.barIndex,timesChron[gSwingHigh.barIndex],timesChron[i],gSwingHigh.currentLevel,"EQH",InpEqualLevelColor,true);
          gLastEqualHigh      = gSwingHigh.currentLevel;
          gLastEqualHighIndex = i;
          equalHighDetected   = true;
         }
       if(i>=InpEqualLength && gSwingLow.barIndex>=0 && MathAbs(lowsChron[i]-gSwingLow.currentLevel) <= InpEqualThreshold*gATRValue[i])
         {
-         SetBufferValue(gEqualLowsBuffer,rates_total,i,gSwingLow.currentLevel);
+         RecordBufferValue(BUFFER_EQ_LOWS,i,gSwingLow.currentLevel);
+         DrawEqualLevel("SMC_EQ_LOW",gSwingLow.barIndex,timesChron[gSwingLow.barIndex],timesChron[i],gSwingLow.currentLevel,"EQL",InpEqualLevelColor,false);
          gLastEqualLow      = gSwingLow.currentLevel;
          gLastEqualLowIndex = i;
          equalLowDetected   = true;
@@ -497,12 +712,14 @@ int OnCalculate(const int rates_total,
 
       if(!equalHighDetected && gLastEqualHighIndex>=0 && highsChron[i] > gLastEqualHigh && closesChron[i] < gLastEqualHigh)
         {
-         SetBufferValue(gLiquidityGrabHighBuffer,rates_total,i,gLastEqualHigh);
+         RecordBufferValue(BUFFER_LIQUIDITY_GRAB_HIGH,i,gLastEqualHigh);
+         DrawStructureLabel("SMC_LG_HIGH",i,timesChron[i],gLastEqualHigh,InpBearStructureColor,"LG",true);
          gLastEqualHighIndex = -1;
         }
       if(!equalLowDetected && gLastEqualLowIndex>=0 && lowsChron[i] < gLastEqualLow && closesChron[i] > gLastEqualLow)
         {
-         SetBufferValue(gLiquidityGrabLowBuffer,rates_total,i,gLastEqualLow);
+         RecordBufferValue(BUFFER_LIQUIDITY_GRAB_LOW,i,gLastEqualLow);
+         DrawStructureLabel("SMC_LG_LOW",i,timesChron[i],gLastEqualLow,InpBullStructureColor,"LG",false);
          gLastEqualLowIndex = -1;
         }
 
@@ -528,21 +745,47 @@ int OnCalculate(const int rates_total,
 
          if(bullishFVG)
            {
-            for(int k=0;k<=extendBars && i+k<rates_total;++k)
+            datetime endTime = latestBarTime;
+            if(extendBars>0)
               {
-               SetBufferValue(gBullishFVGHighBuffer,rates_total,i+k,currLow);
-               SetBufferValue(gBullishFVGLowBuffer,rates_total,i+k,last2High);
+               int candidate = i + extendBars;
+               if(candidate > rates_total-1)
+                  candidate = rates_total-1;
+               endTime = timesChron[candidate];
               }
+            RecordBufferValue(BUFFER_BULLISH_FVG_HIGH,i,currLow);
+            RecordBufferValue(BUFFER_BULLISH_FVG_LOW,i,last2High);
+            DrawRectangleZone("SMC_FVG_BULL",i,timesChron[i-1],endTime,currLow,last2High,InpBullFVGColor);
+            DrawZoneLabel("SMC_FVG_BULL_TAG",i,endTime,0.5*(currLow+last2High),InpBullFVGColor,"Bull FVG");
            }
          if(bearishFVG)
            {
-            for(int k=0;k<=extendBars && i+k<rates_total;++k)
+            datetime endTime = latestBarTime;
+            if(extendBars>0)
               {
-               SetBufferValue(gBearishFVGHighBuffer,rates_total,i+k,currHigh);
-               SetBufferValue(gBearishFVGLowBuffer,rates_total,i+k,last2Low);
+               int candidate = i + extendBars;
+               if(candidate > rates_total-1)
+                  candidate = rates_total-1;
+               endTime = timesChron[candidate];
               }
+            RecordBufferValue(BUFFER_BEARISH_FVG_HIGH,i,last2Low);
+            RecordBufferValue(BUFFER_BEARISH_FVG_LOW,i,currHigh);
+            DrawRectangleZone("SMC_FVG_BEAR",i,timesChron[i-1],endTime,last2Low,currHigh,InpBearFVGColor);
+            DrawZoneLabel("SMC_FVG_BEAR_TAG",i,endTime,0.5*(last2Low+currHigh),InpBearFVGColor,"Bear FVG");
            }
         }
+
+      if(gLastDataUpdateTime==0 || (timesChron[i] - gLastDataUpdateTime) >= InpDataWindowDelaySeconds)
+        {
+         FlushLatestValues(rates_total);
+         gLastDataUpdateTime = timesChron[i];
+        }
+     }
+
+   if(gLastDataUpdateTime==0 && rates_total>0)
+     {
+      FlushLatestValues(rates_total);
+      gLastDataUpdateTime = timesChron[rates_total-1];
      }
 
    return(rates_total);
