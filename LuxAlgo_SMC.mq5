@@ -1,7 +1,15 @@
 #property copyright "SMC conversion"
 #property link      ""
-#property version   "1.10"
+#property version   "1.20"
 #property indicator_chart_window
+
+/*
+ * 智能交易结构（SMC）指标转换
+ * - 识别 BOS / CHoCH / HHHL 等结构，并用虚线标注触发行
+ * - 检测 EQH / EQL、订单块与三根蜡烛缺口（FVG）
+ * - 所有输出按照既定缓冲区顺序写入数据窗口，方便脚本订阅
+ * - 主要逻辑在收盘价确认后执行，避免历史回溯重绘
+ */
 #property indicator_buffers 16
 #property indicator_plots   16
 
@@ -55,29 +63,32 @@ struct Zone
    double    top;
    double    bottom;
    datetime  startTime;
+   datetime  endTime;
+   int       extendBars;
    bool      mitigated;
    int       id;
   };
 
-//--- inputs
-input int      InpSwingLength        = 3;
-input int      InpMinEQTicks         = 3;
-input bool     InpShowStructure      = true;
-input bool     InpShowChoCh          = true;
-input bool     InpShowSwingLabels    = false;
-input bool     InpShowEqualLevels    = true;
-input bool     InpShowOrderBlocks    = true;
-input bool     InpShowFVG            = true;
-input int      InpMaxZones           = 3;
-input int      InpExtendRightBars    = 100;
-input color    InpBullStructureColor = clrLimeGreen;
-input color    InpBearStructureColor = clrTomato;
-input color    InpEqualHighColor     = clrTurquoise;
-input color    InpEqualLowColor      = clrLightCoral;
-input color    InpBearZoneColor      = clrLightPink;
-input color    InpFvgColor           = clrGainsboro;
-input int      InpZoneOpacityActive  = 60;
-input int      InpZoneOpacityMitigated = 25;
+//--- 输入参数（中文说明）
+input int      InpSwingLength        = 3;   // 摆动判定长度（左右各多少根K线）
+input int      InpMinEQTicks         = 3;   // 等高/等低容差（点数）
+input bool     InpShowStructure      = true;   // 是否绘制 BOS/CHoCH
+input bool     InpShowChoCh          = true;   // 是否显示 CHoCH 标签
+input bool     InpShowSwingLabels    = false;  // 是否显示 HH/HL/LH/LL 标签
+input bool     InpShowEqualLevels    = true;   // 是否检测 EQH/EQL
+input bool     InpShowOrderBlocks    = true;   // 是否绘制订单块
+input bool     InpShowFVG            = true;   // 是否绘制 FVG 区域
+input int      InpMaxZones           = 3;      // 每类最多保留的区域数量
+input int      InpExtendRightBars    = 100;    // 结构虚线向右延伸的 K 线数量
+input int      InpFvgExtendBars      = 2;      // FVG 矩形向右延伸的 K 线数量
+input color    InpBullStructureColor = clrLimeGreen;   // 多头结构颜色
+input color    InpBearStructureColor = clrTomato;      // 空头结构颜色
+input color    InpEqualHighColor     = clrTurquoise;   // EQH 颜色
+input color    InpEqualLowColor      = clrLightCoral;  // EQL 颜色
+input color    InpBearZoneColor      = clrLightPink;   // 看跌区域颜色
+input color    InpFvgColor           = clrGainsboro;   // FVG 与看涨订单块颜色
+input int      InpZoneOpacityActive  = 60;             // 区域未触发时透明度
+input int      InpZoneOpacityMitigated = 25;           // 订单块被回测后的透明度
 
 //--- buffers
  double gBullishBosBuffer[];
@@ -114,6 +125,7 @@ int        gStructureLabelId    = 0;
 int        gEqualLabelId        = 0;
 int        gSwingLabelId        = 0;
 int        gNextZoneId          = 0;
+long       gLastBarSeconds      = 0;
 
 Zone       gObZones[];
 Zone       gFvgZones[];
@@ -140,6 +152,7 @@ void ResetState()
    gNextZoneId         = 0;
    gLastBrokenHighSource = -1;
    gLastBrokenLowSource  = -1;
+   gLastBarSeconds     = 0;
    ResetSwingPoint(gLastSwingHigh);
    ResetSwingPoint(gPrevSwingHigh);
    ResetSwingPoint(gLastSwingLow);
@@ -217,41 +230,63 @@ void DrawEqualMarker(const string prefix,const int id,const datetime t,const dou
   {
    string name = BuildName(prefix,id);
    if(ObjectFind(0,name)<0)
-      ObjectCreate(0,name,OBJ_ARROW,0,t,price);
+      ObjectCreate(0,name,OBJ_TEXT,0,t,price);
    ObjectSetInteger(0,name,OBJPROP_TIME,0,t);
    ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
    ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
-   ObjectSetInteger(0,name,OBJPROP_ARROWCODE,highLevel?SYMBOL_ARROWDOWN:SYMBOL_ARROWUP);
-   ObjectSetInteger(0,name,OBJPROP_WIDTH,1);
+   ObjectSetInteger(0,name,OBJPROP_FONTSIZE,8);
    ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+   ObjectSetInteger(0,name,OBJPROP_ANCHOR,highLevel?ANCHOR_LOWER:ANCHOR_UPPER);
+   ObjectSetString(0,name,OBJPROP_TEXT,"·");
   }
 
-void DrawDottedLine(const string prefix,const int id,const datetime fromTime,const datetime toTime,const double price,const color clr)
+void DrawDottedLine(const string prefix,const int id,const datetime fromTime,const datetime eventTime,const double price,const color clr)
   {
    string name = BuildName(prefix,id);
    if(ObjectFind(0,name)<0)
-      ObjectCreate(0,name,OBJ_TREND,0,fromTime,price,toTime,price);
+      ObjectCreate(0,name,OBJ_TREND,0,fromTime,price,eventTime,price);
+   datetime rightBound = eventTime;
+   long barSeconds = gLastBarSeconds;
+   if(barSeconds<=0)
+      barSeconds = PeriodSeconds(_Period);
+   if(barSeconds<=0)
+      barSeconds = 60;
+   if(InpExtendRightBars>0)
+     {
+      datetime candidate = eventTime + (datetime)(barSeconds*InpExtendRightBars);
+      if(candidate>rightBound)
+         rightBound = candidate;
+     }
    ObjectSetInteger(0,name,OBJPROP_TIME,0,fromTime);
-   ObjectSetInteger(0,name,OBJPROP_TIME,1,toTime);
+   ObjectSetInteger(0,name,OBJPROP_TIME,1,rightBound);
    ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
    ObjectSetDouble(0,name,OBJPROP_PRICE,1,price);
    ObjectSetInteger(0,name,OBJPROP_STYLE,STYLE_DOT);
    ObjectSetInteger(0,name,OBJPROP_WIDTH,1);
    ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
    ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
-   ObjectSetInteger(0,name,OBJPROP_RAY_RIGHT,true);
+   ObjectSetInteger(0,name,OBJPROP_RAY_RIGHT,false);
    ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
   }
 
-void RenderZone(const Zone &zone,const string prefix,const color baseColor,const int opacity,const datetime rightTime)
+void RenderZone(const Zone &zone,const string prefix,const color baseColor,const int opacity,const datetime rightTime,const long barSeconds)
   {
    string rectName = BuildName(prefix+"RECT",zone.id);
    string labelName = BuildName(prefix+"LBL",zone.id);
+   datetime zoneRight = rightTime;
+   if(zone.extendBars>0 && barSeconds>0)
+     {
+      zoneRight = zone.startTime + (datetime)(barSeconds*zone.extendBars);
+      if(zoneRight<=zone.startTime)
+         zoneRight = zone.startTime + barSeconds;
+     }
+   if(zone.endTime>0)
+      zoneRight = zone.endTime;
    if(ObjectFind(0,rectName)<0)
-      ObjectCreate(0,rectName,OBJ_RECTANGLE,0,zone.startTime,zone.top,rightTime,zone.bottom);
+      ObjectCreate(0,rectName,OBJ_RECTANGLE,0,zone.startTime,zone.top,zoneRight,zone.bottom);
    ObjectSetInteger(0,rectName,OBJPROP_TIME,0,zone.startTime);
-   ObjectSetInteger(0,rectName,OBJPROP_TIME,1,rightTime);
+   ObjectSetInteger(0,rectName,OBJPROP_TIME,1,zoneRight);
    ObjectSetDouble(0,rectName,OBJPROP_PRICE,0,zone.top);
    ObjectSetDouble(0,rectName,OBJPROP_PRICE,1,zone.bottom);
    ObjectSetInteger(0,rectName,OBJPROP_FILL,true);
@@ -262,8 +297,8 @@ void RenderZone(const Zone &zone,const string prefix,const color baseColor,const
 
    double mid = 0.5*(zone.top+zone.bottom);
    if(ObjectFind(0,labelName)<0)
-      ObjectCreate(0,labelName,OBJ_TEXT,0,rightTime,mid);
-   ObjectSetInteger(0,labelName,OBJPROP_TIME,0,rightTime);
+      ObjectCreate(0,labelName,OBJ_TEXT,0,zoneRight,mid);
+   ObjectSetInteger(0,labelName,OBJPROP_TIME,0,zoneRight);
    ObjectSetDouble(0,labelName,OBJPROP_PRICE,0,mid);
    ObjectSetInteger(0,labelName,OBJPROP_COLOR,baseColor);
    ObjectSetInteger(0,labelName,OBJPROP_FONTSIZE,8);
@@ -345,6 +380,7 @@ void RegisterSwingLabel(const SwingPoint &pt,const bool isHigh,const double prev
    DrawTextLabel("SMC_SWING",gSwingLabelId,pt.time,pt.price,clr,text,isHigh?ANCHOR_LOWER:ANCHOR_UPPER);
   }
 
+//--- 记录等高/等低结构并同步缓冲区
 void RegisterEqualLevel(const SwingPoint &first,const SwingPoint &second,const bool highLevel,const int rates_total)
   {
    ++gEqualLabelId;
@@ -366,6 +402,7 @@ void RegisterEqualLevel(const SwingPoint &first,const SwingPoint &second,const b
      }
   }
 
+//--- 在图表上写入结构文字并绘制触发基准的水平虚线
 void MarkStructure(const SwingPoint &pivot,const datetime eventTime,const bool bullish,const bool choch)
   {
    if(!InpShowStructure)
@@ -377,6 +414,7 @@ void MarkStructure(const SwingPoint &pivot,const datetime eventTime,const bool b
    DrawDottedLine("SMC_STR",gStructureLabelId,pivot.time,eventTime,pivot.price,clr);
   }
 
+//--- 根据最新结构突破生成订单块
 void AddOrderBlock(const int chronoIndex,const bool bullish,const double &opens[],const double &closes[],const datetime &times[],const int rates_total)
   {
    if(!InpShowOrderBlocks)
@@ -390,6 +428,8 @@ void AddOrderBlock(const int chronoIndex,const bool bullish,const double &opens[
          Zone z;
          z.bullish = true;
          z.startTime = times[idx];
+         z.endTime = 0;
+         z.extendBars = 0;
          z.mitigated = false;
          z.id = gNextZoneId++;
          z.top = MathMax(opens[idx],closes[idx]);
@@ -404,6 +444,8 @@ void AddOrderBlock(const int chronoIndex,const bool bullish,const double &opens[
          Zone z;
          z.bullish = false;
          z.startTime = times[idx];
+         z.endTime = 0;
+         z.extendBars = 0;
          z.mitigated = false;
          z.id = gNextZoneId++;
          z.top = MathMax(opens[idx],closes[idx]);
@@ -416,7 +458,8 @@ void AddOrderBlock(const int chronoIndex,const bool bullish,const double &opens[
      }
   }
 
-void AddFvg(const int chronoIndex,const bool bullish,const double top,const double bottom,const datetime startTime,const int rates_total)
+//--- 在检测到三根蜡烛缺口时登记 FVG 区域
+void AddFvg(const int chronoIndex,const bool bullish,const double top,const double bottom,const datetime startTime,const datetime &times[],const int rates_total)
   {
    if(!InpShowFVG)
       return;
@@ -425,6 +468,15 @@ void AddFvg(const int chronoIndex,const bool bullish,const double top,const doub
    z.top = top;
    z.bottom = bottom;
    z.startTime = startTime;
+   int startIndex = MathMax(chronoIndex-2,0);
+   int extendBars = InpFvgExtendBars;
+   if(extendBars<=0)
+      extendBars = 1;
+   int extendIndex = startIndex + extendBars;
+   if(extendIndex>=rates_total)
+      extendIndex = rates_total-1;
+   z.endTime = times[extendIndex];
+   z.extendBars = extendBars;
    z.mitigated = false;
    z.id = gNextZoneId++;
    PushZone(gFvgZones,z,"FVG_");
@@ -440,6 +492,7 @@ void AddFvg(const int chronoIndex,const bool bullish,const double top,const doub
      }
   }
 
+//--- 更新订单块是否被回测
 void UpdateOrderBlocks(const double high,const double low)
   {
    for(int i=ArraySize(gObZones)-1;i>=0;--i)
@@ -459,6 +512,7 @@ void UpdateOrderBlocks(const double high,const double low)
      }
   }
 
+//--- FVG 被价格回补后立即移除
 void UpdateFvgs(const double high,const double low)
   {
    for(int i=ArraySize(gFvgZones)-1;i>=0;--i)
@@ -479,13 +533,14 @@ void UpdateFvgs(const double high,const double low)
      }
   }
 
+//--- 根据最新时间绘制订单块与 FVG 矩形
 void RenderZones(const datetime latestTime,const long barSeconds)
   {
    datetime rightTime = latestTime + (datetime)(InpExtendRightBars*barSeconds);
   if(InpShowFVG)
     {
       for(int i=0;i<ArraySize(gFvgZones);++i)
-         RenderZone(gFvgZones[i],"FVG_",InpFvgColor,InpZoneOpacityActive,rightTime);
+         RenderZone(gFvgZones[i],"FVG_",InpFvgColor,InpZoneOpacityActive,rightTime,barSeconds);
     }
    else
      {
@@ -499,7 +554,7 @@ void RenderZones(const datetime latestTime,const long barSeconds)
         {
          int opacity = gObZones[i].mitigated ? InpZoneOpacityMitigated : InpZoneOpacityActive;
          color zoneColor = gObZones[i].bullish ? InpFvgColor : InpBearZoneColor;
-         RenderZone(gObZones[i],"OB_",zoneColor,opacity,rightTime);
+         RenderZone(gObZones[i],"OB_",zoneColor,opacity,rightTime,barSeconds);
         }
     }
    else
@@ -510,12 +565,13 @@ void RenderZones(const datetime latestTime,const long barSeconds)
   }
 
 //--- indicator configuration -------------------------------------------------
-void ConfigureBuffer(const int index,double &buffer[],const string label)
+//--- 配置指标缓冲区并保持数据窗口可见
+void ConfigureBuffer(const int index,double &buffer[],const string label,const color plotColor)
   {
    SetIndexBuffer(index,buffer,INDICATOR_DATA);
    ArraySetAsSeries(buffer,true);
    PlotIndexSetInteger(index,PLOT_DRAW_TYPE,DRAW_LINE);
-   PlotIndexSetInteger(index,PLOT_LINE_COLOR,clrNONE);
+   PlotIndexSetInteger(index,PLOT_LINE_COLOR,plotColor);
    PlotIndexSetInteger(index,PLOT_LINE_STYLE,STYLE_DOT);
    PlotIndexSetInteger(index,PLOT_LINE_WIDTH,1);
    PlotIndexSetString(index,PLOT_LABEL,label);
@@ -529,22 +585,22 @@ int OnInit()
    IndicatorSetString(INDICATOR_SHORTNAME,"SMC Structure");
    IndicatorSetInteger(INDICATOR_DIGITS,_Digits);
 
-   ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBosBuffer,"Bullish BOS");
-   ConfigureBuffer(BUFFER_BEARISH_BOS,gBearishBosBuffer,"Bearish BOS");
-   ConfigureBuffer(BUFFER_BULLISH_CHOCH,gBullishChochBuffer,"Bullish CHoCH");
-   ConfigureBuffer(BUFFER_BEARISH_CHOCH,gBearishChochBuffer,"Bearish CHoCH");
-   ConfigureBuffer(BUFFER_BULLISH_OB_HIGH,gBullishOBHighBuffer,"Bull OB High");
-   ConfigureBuffer(BUFFER_BULLISH_OB_LOW,gBullishOBLowBuffer,"Bull OB Low");
-   ConfigureBuffer(BUFFER_BEARISH_OB_HIGH,gBearishOBHighBuffer,"Bear OB High");
-   ConfigureBuffer(BUFFER_BEARISH_OB_LOW,gBearishOBLowBuffer,"Bear OB Low");
-   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFvgHighBuffer,"Bullish FVG High");
-   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFvgLowBuffer,"Bullish FVG Low");
-   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFvgHighBuffer,"Bearish FVG High");
-   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFvgLowBuffer,"Bearish FVG Low");
-   ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighBuffer,"Equal High");
-   ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowBuffer,"Equal Low");
-   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLgHighBuffer,"Liquidity Grab High");
-   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLgLowBuffer,"Liquidity Grab Low");
+   ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBosBuffer,"Bullish BOS",InpBullStructureColor);
+   ConfigureBuffer(BUFFER_BEARISH_BOS,gBearishBosBuffer,"Bearish BOS",InpBearStructureColor);
+   ConfigureBuffer(BUFFER_BULLISH_CHOCH,gBullishChochBuffer,"Bullish CHoCH",InpBullStructureColor);
+   ConfigureBuffer(BUFFER_BEARISH_CHOCH,gBearishChochBuffer,"Bearish CHoCH",InpBearStructureColor);
+   ConfigureBuffer(BUFFER_BULLISH_OB_HIGH,gBullishOBHighBuffer,"Bull OB High",InpFvgColor);
+   ConfigureBuffer(BUFFER_BULLISH_OB_LOW,gBullishOBLowBuffer,"Bull OB Low",InpFvgColor);
+   ConfigureBuffer(BUFFER_BEARISH_OB_HIGH,gBearishOBHighBuffer,"Bear OB High",InpBearZoneColor);
+   ConfigureBuffer(BUFFER_BEARISH_OB_LOW,gBearishOBLowBuffer,"Bear OB Low",InpBearZoneColor);
+   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFvgHighBuffer,"Bullish FVG High",InpFvgColor);
+   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFvgLowBuffer,"Bullish FVG Low",InpFvgColor);
+   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFvgHighBuffer,"Bearish FVG High",InpFvgColor);
+   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFvgLowBuffer,"Bearish FVG Low",InpFvgColor);
+   ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighBuffer,"Equal High",InpEqualHighColor);
+   ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowBuffer,"Equal Low",InpEqualLowColor);
+   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLgHighBuffer,"Liquidity Grab High",InpBearStructureColor);
+   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLgLowBuffer,"Liquidity Grab Low",InpBullStructureColor);
 
    ResetState();
    return(INIT_SUCCEEDED);
@@ -601,6 +657,16 @@ int OnCalculate(const int rates_total,
      }
 
    int lastClosed = rates_total-2;
+   if(lastClosed<0)
+      return(prev_calculated);
+
+   long barSeconds = PeriodSeconds(_Period);
+   if(barSeconds<=0 && lastClosed>0)
+      barSeconds = (long)(times[lastClosed] - times[lastClosed-1]);
+   if(barSeconds<=0)
+      barSeconds = 60;
+   gLastBarSeconds = barSeconds;
+
    if(lastClosed<InpSwingLength)
       return(prev_calculated);
 
@@ -717,9 +783,9 @@ int OnCalculate(const int rates_total,
          bool bullGap = lows[chrono] > high2 && closes[chrono-1] > high2;
          bool bearGap = highs[chrono] < low2 && closes[chrono-1] < low2;
          if(bullGap)
-            AddFvg(chrono,true,lows[chrono],high2,times[chrono-2],rates_total);
+            AddFvg(chrono,true,lows[chrono],high2,times[chrono-2],times,rates_total);
          if(bearGap)
-            AddFvg(chrono,false,low2,highs[chrono],times[chrono-2],rates_total);
+            AddFvg(chrono,false,low2,highs[chrono],times[chrono-2],times,rates_total);
         }
 
       UpdateOrderBlocks(high,low);
@@ -729,10 +795,7 @@ int OnCalculate(const int rates_total,
      }
 
    datetime latestTime = times[lastClosed];
-   long barSeconds = PeriodSeconds(_Period);
-   if(barSeconds<=0 && lastClosed>0)
-      barSeconds = (long)(times[lastClosed]-times[lastClosed-1]);
-   RenderZones(latestTime,barSeconds);
+   RenderZones(latestTime,gLastBarSeconds);
 
    return(rates_total);
   }
