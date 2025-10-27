@@ -566,57 +566,80 @@ void RenderZones(const datetime latestTime,const long barSeconds)
 
 //--- indicator configuration -------------------------------------------------
 //--- 配置指标缓冲区并保持数据窗口可见
-void ConfigureBuffer(const int index,double &buffer[],const string label,const color plotColor)
+void ConfigureBuffer(const int plot_index,double &buffer[],const string label,const color plotColor)
   {
-   SetIndexBuffer(index,buffer,INDICATOR_DATA);
+   // 将数组绑定到指定的绘图索引，允许数据窗口读取值
+   SetIndexBuffer(plot_index,buffer,INDICATOR_DATA);
+   // 设置数组方向与时间序列一致（最新在前）
    ArraySetAsSeries(buffer,true);
-   PlotIndexSetInteger(index,PLOT_DRAW_TYPE,DRAW_LINE);
-   PlotIndexSetInteger(index,PLOT_LINE_COLOR,plotColor);
-   PlotIndexSetInteger(index,PLOT_LINE_STYLE,STYLE_DOT);
-   PlotIndexSetInteger(index,PLOT_LINE_WIDTH,1);
-   PlotIndexSetString(index,PLOT_LABEL,label);
-   PlotIndexSetInteger(index,PLOT_SHOW_DATA,true);
-   PlotIndexSetDouble(index,PLOT_EMPTY_VALUE,EMPTY_VALUE);
-   SetIndexEmptyValue(index,EMPTY_VALUE);
+   // 指定绘图类型为折线（即便实际不在图上显示，数据窗口仍可展示）
+   PlotIndexSetInteger(plot_index,PLOT_DRAW_TYPE,DRAW_LINE);
+   // 设置线条颜色，便于在数据窗口区分
+   PlotIndexSetInteger(plot_index,PLOT_LINE_COLOR,plotColor);
+   // 使用点状线型，避免在图表上形成实体线段
+   PlotIndexSetInteger(plot_index,PLOT_LINE_STYLE,STYLE_DOT);
+   // 线宽保持为 1，降低对图表的干扰
+   PlotIndexSetInteger(plot_index,PLOT_LINE_WIDTH,1);
+   // 在数据窗口显示友好名称
+   PlotIndexSetString(plot_index,PLOT_LABEL,label);
+   // 强制在数据窗口显示该绘图值
+   PlotIndexSetInteger(plot_index,PLOT_SHOW_DATA,true);
+   // 设置空值标记，用于未触发时隐藏数据
+   PlotIndexSetDouble(plot_index,PLOT_EMPTY_VALUE,EMPTY_VALUE);
+   // 与上方一致，确保指标核心函数也识别空值
+   SetIndexEmptyValue(plot_index,EMPTY_VALUE);
   }
 
 int OnInit()
   {
+   // 设置指标短名称，方便在图表与数据窗口显示
    IndicatorSetString(INDICATOR_SHORTNAME,"SMC Structure");
+   // 指定输出小数位与当前品种一致
    IndicatorSetInteger(INDICATOR_DIGITS,_Digits);
 
-   ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBosBuffer,"Bullish BOS",InpBullStructureColor);
-   ConfigureBuffer(BUFFER_BEARISH_BOS,gBearishBosBuffer,"Bearish BOS",InpBearStructureColor);
-   ConfigureBuffer(BUFFER_BULLISH_CHOCH,gBullishChochBuffer,"Bullish CHoCH",InpBullStructureColor);
-   ConfigureBuffer(BUFFER_BEARISH_CHOCH,gBearishChochBuffer,"Bearish CHoCH",InpBearStructureColor);
-   ConfigureBuffer(BUFFER_BULLISH_OB_HIGH,gBullishOBHighBuffer,"Bull OB High",InpFvgColor);
-   ConfigureBuffer(BUFFER_BULLISH_OB_LOW,gBullishOBLowBuffer,"Bull OB Low",InpFvgColor);
-   ConfigureBuffer(BUFFER_BEARISH_OB_HIGH,gBearishOBHighBuffer,"Bear OB High",InpBearZoneColor);
-   ConfigureBuffer(BUFFER_BEARISH_OB_LOW,gBearishOBLowBuffer,"Bear OB Low",InpBearZoneColor);
-   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFvgHighBuffer,"Bullish FVG High",InpFvgColor);
-   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFvgLowBuffer,"Bullish FVG Low",InpFvgColor);
-   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFvgHighBuffer,"Bearish FVG High",InpFvgColor);
-   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFvgLowBuffer,"Bearish FVG Low",InpFvgColor);
-   ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighBuffer,"Equal High",InpEqualHighColor);
-   ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowBuffer,"Equal Low",InpEqualLowColor);
-   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLgHighBuffer,"Liquidity Grab High",InpBearStructureColor);
-   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLgLowBuffer,"Liquidity Grab Low",InpBullStructureColor);
+   // 依次配置所有 16 个缓冲区，保证数据窗口顺序与规范一致
+   ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBosBuffer,"Bullish BOS",InpBullStructureColor);      // 多头结构突破
+   ConfigureBuffer(BUFFER_BEARISH_BOS,gBearishBosBuffer,"Bearish BOS",InpBearStructureColor);      // 空头结构突破
+   ConfigureBuffer(BUFFER_BULLISH_CHOCH,gBullishChochBuffer,"Bullish CHoCH",InpBullStructureColor); // 多头 CHoCH
+   ConfigureBuffer(BUFFER_BEARISH_CHOCH,gBearishChochBuffer,"Bearish CHoCH",InpBearStructureColor); // 空头 CHoCH
+   ConfigureBuffer(BUFFER_BULLISH_OB_HIGH,gBullishOBHighBuffer,"Bull OB High",InpFvgColor);         // 多头订单块上沿
+   ConfigureBuffer(BUFFER_BULLISH_OB_LOW,gBullishOBLowBuffer,"Bull OB Low",InpFvgColor);            // 多头订单块下沿
+   ConfigureBuffer(BUFFER_BEARISH_OB_HIGH,gBearishOBHighBuffer,"Bear OB High",InpBearZoneColor);    // 空头订单块上沿
+   ConfigureBuffer(BUFFER_BEARISH_OB_LOW,gBearishOBLowBuffer,"Bear OB Low",InpBearZoneColor);       // 空头订单块下沿
+   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFvgHighBuffer,"Bullish FVG High",InpFvgColor);   // 看涨 FVG 上沿
+   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFvgLowBuffer,"Bullish FVG Low",InpFvgColor);      // 看涨 FVG 下沿
+   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFvgHighBuffer,"Bearish FVG High",InpFvgColor);   // 看跌 FVG 上沿
+   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFvgLowBuffer,"Bearish FVG Low",InpFvgColor);      // 看跌 FVG 下沿
+   ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighBuffer,"Equal High",InpEqualHighColor);                // 等高价位
+   ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowBuffer,"Equal Low",InpEqualLowColor);                   // 等低价位
+   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLgHighBuffer,"Liquidity Grab High",InpBearStructureColor); // 流动性抓取高点
+   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLgLowBuffer,"Liquidity Grab Low",InpBullStructureColor);   // 流动性抓取低点
 
+   // 重置内部状态，确保指标从干净的缓存开始运行
    ResetState();
+   // 返回初始化成功
    return(INIT_SUCCEEDED);
   }
 
 void OnDeinit(const int reason)
   {
+   // 删除结构相关的文字与虚线，避免在移除指标后残留
    DeleteObjectByPrefix("SMC_STR");
+   // 删除等高/等低文本标签
    DeleteObjectByPrefix("SMC_EQ");
+   // 删除等高/等低辅助矩形或线段（旧版本遗留）
    DeleteObjectByPrefix("SMC_EQR");
    DeleteObjectByPrefix("SMC_EQD");
    DeleteObjectByPrefix("SMC_EQL");
+   // 删除等高/等低的标记点
    DeleteObjectByPrefix("SMC_EQM");
+   // 删除摆动点标签
    DeleteObjectByPrefix("SMC_SWING");
+   // 删除流动性抓取提示
    DeleteObjectByPrefix("SMC_LG");
+   // 删除订单块矩形
    DeleteObjectByPrefix("OB_");
+   // 删除 FVG 矩形
    DeleteObjectByPrefix("FVG_");
   }
 
@@ -626,14 +649,17 @@ int OnCalculate(const int rates_total,
                 const int begin,
                 const double &price[])
   {
+   // 如果总柱数不足以计算摆动点，则直接退出
    if(rates_total<=InpSwingLength*2)
       return(0);
 
+   // 读取历史数据（开高低收与时间）
    MqlRates rates[];
    ArraySetAsSeries(rates,true);
    if(CopyRates(_Symbol,_Period,0,rates_total,rates)<=0)
       return(prev_calculated);
 
+   // 构造独立数组便于访问
    double highs[];
    double lows[];
    double opens[];
@@ -646,14 +672,15 @@ int OnCalculate(const int rates_total,
    ArrayResize(closes,rates_total);
    ArrayResize(times,rates_total);
 
+   // 复制数据并将索引转换为从旧到新的顺序
    for(int c=0;c<rates_total;++c)
      {
-      int idx = rates_total-1-c;
-      highs[c]  = rates[idx].high;
-      lows[c]   = rates[idx].low;
-      opens[c]  = rates[idx].open;
-      closes[c] = rates[idx].close;
-      times[c]  = rates[idx].time;
+      int idx = rates_total-1-c;                         // 从末尾向前读取得到旧数据
+      highs[c]  = rates[idx].high;                       // 保存最高价
+      lows[c]   = rates[idx].low;                        // 保存最低价
+      opens[c]  = rates[idx].open;                       // 保存开盘价
+      closes[c] = rates[idx].close;                      // 保存收盘价
+      times[c]  = rates[idx].time;                       // 保存时间戳
      }
 
    int lastClosed = rates_total-2;
