@@ -1,6 +1,6 @@
-#property copyright "Converted from LuxAlgo Smart Money Concepts"
-#property link      "https://www.luxalgo.com"
-#property version   "1.00"
+#property copyright "SMC conversion"
+#property link      ""
+#property version   "1.10"
 #property indicator_chart_window
 #property indicator_buffers 16
 #property indicator_plots   16
@@ -22,12 +22,6 @@
 #property indicator_type15  DRAW_NONE
 #property indicator_type16  DRAW_NONE
 
-enum eLegDirection
-  {
-   LEG_BEARISH = 0,
-   LEG_BULLISH = 1
-  };
-
 enum BufferIndex
   {
    BUFFER_BULLISH_BOS = 0,
@@ -48,786 +42,722 @@ enum BufferIndex
    BUFFER_LIQUIDITY_GRAB_LOW = 15
   };
 
-struct Pivot
+struct SwingPoint
   {
-   double    currentLevel;
-   double    lastLevel;
-   bool      crossed;
-   datetime  barTime;
-   int       barIndex;
-
-   void Reset()
-     {
-      currentLevel = 0.0;
-      lastLevel    = 0.0;
-      crossed      = false;
-      barTime      = 0;
-      barIndex     = -1;
-     }
+   int       index;
+   double    price;
+   datetime  time;
   };
 
-struct TrendBias
-  {
-   int bias;
-
-   void Reset()
-     {
-      bias = 0;
-     }
-  };
-
-struct FVGEvent
+struct Zone
   {
    bool      bullish;
-   bool      active;
    double    top;
    double    bottom;
-   datetime  leftTime;
-   int       startIndex;
+   datetime  startTime;
+   bool      mitigated;
+   int       id;
   };
 
-input int      InpSwingLength             = 50;
-input int      InpInternalLength          = 5;
-input int      InpEqualLength             = 3;
-input double   InpEqualThreshold          = 0.1;
-input int      InpATRPeriod               = 200;
-input bool     InpShowOrderBlocks         = true;
-input bool     InpShowFairValueGaps       = false;
-input bool     InpAutoFVGThreshold        = true;
-input ENUM_TIMEFRAMES InpFVGTimeframe     = PERIOD_CURRENT;
-input int      InpFVGExtend               = 1;
+//--- inputs
+input int      InpSwingLength        = 3;
+input int      InpMinEQTicks         = 3;
+input bool     InpShowStructure      = true;
+input bool     InpShowChoCh          = true;
+input bool     InpShowSwingLabels    = false;
+input bool     InpShowEqualLevels    = true;
+input bool     InpShowOrderBlocks    = true;
+input bool     InpShowFVG            = true;
+input int      InpMaxZones           = 3;
+input int      InpExtendRightBars    = 100;
+input color    InpBullStructureColor = clrLimeGreen;
+input color    InpBearStructureColor = clrTomato;
+input color    InpEqualHighColor     = clrTurquoise;
+input color    InpEqualLowColor      = clrLightCoral;
+input color    InpBullOBColor        = clrSkyBlue;
+input color    InpBearOBColor        = clrLightPink;
+input color    InpBullFVGColor       = clrGainsboro;
+input color    InpBearFVGColor       = clrLightSteelBlue;
+input int      InpZoneOpacityActive  = 60;
+input int      InpZoneOpacityMitigated = 25;
 
-// Style colors (approximation of TradingView palette)
-input color    InpBullStructureColor      = clrLimeGreen;
-input color    InpBearStructureColor      = clrTomato;
-input color    InpEqualLevelColor         = clrDodgerBlue;
-input color    InpBullOrderBlockColor     = clrCornflowerBlue;
-input color    InpBearOrderBlockColor     = clrCrimson;
-input color    InpBullFVGColor            = clrMediumSeaGreen;
-input color    InpBearFVGColor            = clrLightSalmon;
+//--- buffers
+ double gBullishBosBuffer[];
+ double gBearishBosBuffer[];
+ double gBullishChochBuffer[];
+ double gBearishChochBuffer[];
+ double gBullishOBHighBuffer[];
+ double gBullishOBLowBuffer[];
+ double gBearishOBHighBuffer[];
+ double gBearishOBLowBuffer[];
+ double gBullishFvgHighBuffer[];
+ double gBullishFvgLowBuffer[];
+ double gBearishFvgHighBuffer[];
+ double gBearishFvgLowBuffer[];
+ double gEqualHighBuffer[];
+ double gEqualLowBuffer[];
+ double gLgHighBuffer[];
+ double gLgLowBuffer[];
 
-// Indicator buffers
-double        gBullishBOSBuffer[];
-double        gBearishBOSBuffer[];
-double        gBullishChoChBuffer[];
-double        gBearishChoChBuffer[];
-double        gBullishOBHighBuffer[];
-double        gBullishOBLowBuffer[];
-double        gBearishOBHighBuffer[];
-double        gBearishOBLowBuffer[];
-double        gBullishFVGHighBuffer[];
-double        gBullishFVGLowBuffer[];
-double        gBearishFVGHighBuffer[];
-double        gBearishFVGLowBuffer[];
-double        gEqualHighsBuffer[];
-double        gEqualLowsBuffer[];
-double        gLiquidityGrabHighBuffer[];
-double        gLiquidityGrabLowBuffer[];
+//--- runtime state
+int        gLastProcessedIndex = -1;
+int        gTrendDirection     = 0;
+SwingPoint gLastSwingHigh;
+SwingPoint gPrevSwingHigh;
+SwingPoint gLastSwingLow;
+SwingPoint gPrevSwingLow;
+int        gLastBrokenHighSource = -1;
+int        gLastBrokenLowSource  = -1;
+double     gLastEqualHighPrice  = 0.0;
+int        gLastEqualHighIndex  = -1;
+double     gLastEqualLowPrice   = 0.0;
+int        gLastEqualLowIndex   = -1;
+int        gStructureLabelId    = 0;
+int        gEqualLabelId        = 0;
+int        gSwingLabelId        = 0;
+int        gNextZoneId          = 0;
 
-// Working state
-Pivot       gSwingHigh;
-Pivot       gSwingLow;
-Pivot       gInternalHigh;
-Pivot       gInternalLow;
-TrendBias   gSwingTrend;
-TrendBias   gInternalTrend;
+Zone       gObZones[];
+Zone       gFvgZones[];
 
-double      gATRValue[];
-double      gLastEqualHigh = 0.0;
-int         gLastEqualHighIndex = -1;
-double      gLastEqualLow = 0.0;
-int         gLastEqualLowIndex = -1;
-double      gPointSize = 0.0;
-
-int         gLastBufferSize     = 0;
-
-//+------------------------------------------------------------------+
-//| Helper functions                                                |
-//+------------------------------------------------------------------+
-int HighestIndex(const double &arr[], int start, int length)
+//--- helpers -----------------------------------------------------------------
+void ResetSwingPoint(SwingPoint &p)
   {
-   int index = start;
-   double maxVal = arr[start];
-   for(int i=start+1; i<start+length; ++i)
-     {
-      if(arr[i] > maxVal)
-        {
-         maxVal = arr[i];
-         index = i;
-        }
-     }
-   return index;
-  }
-
-int LowestIndex(const double &arr[], int start, int length)
-  {
-   int index = start;
-   double minVal = arr[start];
-   for(int i=start+1; i<start+length; ++i)
-     {
-      if(arr[i] < minVal)
-        {
-         minVal = arr[i];
-         index = i;
-        }
-     }
-   return index;
-  }
-
-double Highest(const double &arr[], int start, int length)
-  {
-   return arr[HighestIndex(arr,start,length)];
-  }
-
-double Lowest(const double &arr[], int start, int length)
-  {
-   return arr[LowestIndex(arr,start,length)];
-  }
-
-int LegDirection(const double &highs[], const double &lows[], int index, int length)
-  {
-   if(index < length)
-      return LEG_BEARISH;
-
-   double newHigh = highs[index] > Highest(highs,index-length,length);
-   double newLow  = lows[index]  < Lowest(lows,index-length,length);
-
-   if(newHigh)
-      return LEG_BEARISH;
-   if(newLow)
-      return LEG_BULLISH;
-   return LEG_BEARISH;
-  }
-
-bool StartOfNewLeg(int prevLeg, int currLeg)
-  {
-   return (currLeg != prevLeg);
-  }
-
-bool StartOfBullishLeg(int prevLeg, int currLeg)
-  {
-   return (prevLeg == LEG_BEARISH && currLeg == LEG_BULLISH);
-  }
-
-bool StartOfBearishLeg(int prevLeg, int currLeg)
-  {
-   return (prevLeg == LEG_BULLISH && currLeg == LEG_BEARISH);
+   p.index = -1;
+   p.price = 0.0;
+   p.time  = 0;
   }
 
 void ResetState()
   {
-   gSwingHigh.Reset();
-   gSwingLow.Reset();
-   gInternalHigh.Reset();
-   gInternalLow.Reset();
-   gSwingTrend.Reset();
-   gInternalTrend.Reset();
-   gLastEqualHigh      = 0.0;
+   gLastProcessedIndex = -1;
+   gTrendDirection     = 0;
+   gLastEqualHighPrice = 0.0;
+   gLastEqualLowPrice  = 0.0;
    gLastEqualHighIndex = -1;
-   gLastEqualLow       = 0.0;
    gLastEqualLowIndex  = -1;
+   gStructureLabelId   = 0;
+   gEqualLabelId       = 0;
+   gSwingLabelId       = 0;
+   gNextZoneId         = 0;
+   gLastBrokenHighSource = -1;
+   gLastBrokenLowSource  = -1;
+   ResetSwingPoint(gLastSwingHigh);
+   ResetSwingPoint(gPrevSwingHigh);
+   ResetSwingPoint(gLastSwingLow);
+   ResetSwingPoint(gPrevSwingLow);
+   ArrayResize(gObZones,0);
+   ArrayResize(gFvgZones,0);
   }
 
-void EnsureBufferSize(double &buffer[],const int newSize)
+string BuildName(const string prefix,const int id)
   {
-   int currentSize = ArraySize(buffer);
-   if(currentSize == newSize)
-      return;
+   return prefix+"_"+IntegerToString(id);
+  }
 
-   bool initialize = (currentSize == 0);
-   ArrayResize(buffer,newSize);
+void EnsureBuffer(double &buffer[],const int size)
+  {
+   if(ArraySize(buffer)==size)
+      return;
+   ArrayResize(buffer,size);
    ArraySetAsSeries(buffer,true);
-
-   if(initialize)
-      ArrayInitialize(buffer,EMPTY_VALUE);
-   else if(newSize > currentSize)
-     {
-      for(int i=currentSize;i<newSize;++i)
-         buffer[i] = EMPTY_VALUE;
-     }
+   ArrayInitialize(buffer,EMPTY_VALUE);
   }
 
-void EnsureAllBuffers(const int rates_total)
+void EnsureBuffers(const int rates_total)
   {
-   if(gLastBufferSize == rates_total)
+   EnsureBuffer(gBullishBosBuffer,rates_total);
+   EnsureBuffer(gBearishBosBuffer,rates_total);
+   EnsureBuffer(gBullishChochBuffer,rates_total);
+   EnsureBuffer(gBearishChochBuffer,rates_total);
+   EnsureBuffer(gBullishOBHighBuffer,rates_total);
+   EnsureBuffer(gBullishOBLowBuffer,rates_total);
+   EnsureBuffer(gBearishOBHighBuffer,rates_total);
+   EnsureBuffer(gBearishOBLowBuffer,rates_total);
+   EnsureBuffer(gBullishFvgHighBuffer,rates_total);
+   EnsureBuffer(gBullishFvgLowBuffer,rates_total);
+   EnsureBuffer(gBearishFvgHighBuffer,rates_total);
+   EnsureBuffer(gBearishFvgLowBuffer,rates_total);
+   EnsureBuffer(gEqualHighBuffer,rates_total);
+   EnsureBuffer(gEqualLowBuffer,rates_total);
+   EnsureBuffer(gLgHighBuffer,rates_total);
+   EnsureBuffer(gLgLowBuffer,rates_total);
+  }
+
+int SeriesIndex(const int rates_total,const int chronoIndex)
+  {
+   return rates_total-1-chronoIndex;
+  }
+
+void SetBufferValue(double &buffer[],const int rates_total,const int chronoIndex,const double value)
+  {
+   if(chronoIndex<0 || chronoIndex>=rates_total)
       return;
-
-   EnsureBufferSize(gBullishBOSBuffer,rates_total);
-   EnsureBufferSize(gBearishBOSBuffer,rates_total);
-   EnsureBufferSize(gBullishChoChBuffer,rates_total);
-   EnsureBufferSize(gBearishChoChBuffer,rates_total);
-   EnsureBufferSize(gBullishOBHighBuffer,rates_total);
-   EnsureBufferSize(gBullishOBLowBuffer,rates_total);
-   EnsureBufferSize(gBearishOBHighBuffer,rates_total);
-   EnsureBufferSize(gBearishOBLowBuffer,rates_total);
-   EnsureBufferSize(gBullishFVGHighBuffer,rates_total);
-   EnsureBufferSize(gBullishFVGLowBuffer,rates_total);
-   EnsureBufferSize(gBearishFVGHighBuffer,rates_total);
-   EnsureBufferSize(gBearishFVGLowBuffer,rates_total);
-   EnsureBufferSize(gEqualHighsBuffer,rates_total);
-   EnsureBufferSize(gEqualLowsBuffer,rates_total);
-   EnsureBufferSize(gLiquidityGrabHighBuffer,rates_total);
-   EnsureBufferSize(gLiquidityGrabLowBuffer,rates_total);
-
-   gLastBufferSize = rates_total;
+   int shift = SeriesIndex(rates_total,chronoIndex);
+   if(shift>=0 && shift<rates_total)
+      buffer[shift] = value;
   }
 
-void PushBufferValue(const int bufferIndex,const int rates_total,const int chronologicalIndex,const double value)
+void ClearBuffersAtIndex(const int rates_total,const int chronoIndex)
   {
-   switch(bufferIndex)
+   SetBufferValue(gBullishBosBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gBearishBosBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gBullishChochBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gBearishChochBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gBullishOBHighBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gBullishOBLowBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gBearishOBHighBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gBearishOBLowBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gBullishFvgHighBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gBullishFvgLowBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gBearishFvgHighBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gBearishFvgLowBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gEqualHighBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gEqualLowBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gLgHighBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+   SetBufferValue(gLgLowBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+  }
+
+void DeleteObjectByPrefix(const string prefix)
+  {
+   for(int i=ObjectsTotal(0,-1,-1)-1; i>=0; --i)
      {
-      case BUFFER_BULLISH_BOS:            SetBufferValue(gBullishBOSBuffer,rates_total,chronologicalIndex,value);      break;
-      case BUFFER_BEARISH_BOS:            SetBufferValue(gBearishBOSBuffer,rates_total,chronologicalIndex,value);      break;
-      case BUFFER_BULLISH_CHOCH:          SetBufferValue(gBullishChoChBuffer,rates_total,chronologicalIndex,value);    break;
-      case BUFFER_BEARISH_CHOCH:          SetBufferValue(gBearishChoChBuffer,rates_total,chronologicalIndex,value);    break;
-      case BUFFER_BULLISH_OB_HIGH:        SetBufferValue(gBullishOBHighBuffer,rates_total,chronologicalIndex,value);   break;
-      case BUFFER_BULLISH_OB_LOW:         SetBufferValue(gBullishOBLowBuffer,rates_total,chronologicalIndex,value);    break;
-      case BUFFER_BEARISH_OB_HIGH:        SetBufferValue(gBearishOBHighBuffer,rates_total,chronologicalIndex,value);   break;
-      case BUFFER_BEARISH_OB_LOW:         SetBufferValue(gBearishOBLowBuffer,rates_total,chronologicalIndex,value);    break;
-      case BUFFER_BULLISH_FVG_HIGH:       SetBufferValue(gBullishFVGHighBuffer,rates_total,chronologicalIndex,value);  break;
-      case BUFFER_BULLISH_FVG_LOW:        SetBufferValue(gBullishFVGLowBuffer,rates_total,chronologicalIndex,value);   break;
-      case BUFFER_BEARISH_FVG_HIGH:       SetBufferValue(gBearishFVGHighBuffer,rates_total,chronologicalIndex,value);  break;
-      case BUFFER_BEARISH_FVG_LOW:        SetBufferValue(gBearishFVGLowBuffer,rates_total,chronologicalIndex,value);   break;
-      case BUFFER_EQ_HIGHS:               SetBufferValue(gEqualHighsBuffer,rates_total,chronologicalIndex,value);      break;
-      case BUFFER_EQ_LOWS:                SetBufferValue(gEqualLowsBuffer,rates_total,chronologicalIndex,value);       break;
-      case BUFFER_LIQUIDITY_GRAB_HIGH:    SetBufferValue(gLiquidityGrabHighBuffer,rates_total,chronologicalIndex,value); break;
-      case BUFFER_LIQUIDITY_GRAB_LOW:     SetBufferValue(gLiquidityGrabLowBuffer,rates_total,chronologicalIndex,value);  break;
+      string name = ObjectName(0,i);
+      if(StringFind(name,prefix)==0)
+         ObjectDelete(0,name);
      }
   }
 
-string BuildObjectName(const string prefix,const int index)
+void DrawTextLabel(const string prefix,const int id,const datetime t,const double price,const color clr,const string text,const int anchor)
   {
-   return prefix + "_" + IntegerToString(index);
-  }
-
-double PriceOffset(const double price,const bool above)
-  {
-   double offset = 6.0 * gPointSize;
-   if(offset == 0.0)
-      offset = 6.0 * SymbolInfoDouble(_Symbol,SYMBOL_POINT);
-   return above ? price + offset : price - offset;
-  }
-
-void DrawStructureLabel(const string prefix,const int index,const datetime t,const double price,const color clr,const string text,const bool above)
-  {
-   string name = BuildObjectName(prefix,index);
-   double positionedPrice = PriceOffset(price,above);
-   if(ObjectFind(0,name) < 0)
-      ObjectCreate(0,name,OBJ_TEXT,0,t,positionedPrice);
-
+   string name = BuildName(prefix,id);
+   if(ObjectFind(0,name)<0)
+      ObjectCreate(0,name,OBJ_TEXT,0,t,price);
    ObjectSetInteger(0,name,OBJPROP_TIME,0,t);
-   ObjectSetDouble(0,name,OBJPROP_PRICE,0,positionedPrice);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
    ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
    ObjectSetInteger(0,name,OBJPROP_FONTSIZE,8);
-   ObjectSetInteger(0,name,OBJPROP_ANCHOR,above ? ANCHOR_LOWER : ANCHOR_UPPER);
+   ObjectSetInteger(0,name,OBJPROP_ANCHOR,anchor);
    ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
    ObjectSetString(0,name,OBJPROP_TEXT,text);
   }
 
-void DrawStructureLine(const string prefix,const int index,const datetime fromTime,const datetime toTime,const double price,const color clr)
+void DrawDottedLine(const string prefix,const int id,const datetime fromTime,const datetime toTime,const double price,const color clr)
   {
-   string name = BuildObjectName(prefix,index);
-   if(ObjectFind(0,name) < 0)
+   string name = BuildName(prefix,id);
+   if(ObjectFind(0,name)<0)
       ObjectCreate(0,name,OBJ_TREND,0,fromTime,price,toTime,price);
-
    ObjectSetInteger(0,name,OBJPROP_TIME,0,fromTime);
    ObjectSetInteger(0,name,OBJPROP_TIME,1,toTime);
    ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
    ObjectSetDouble(0,name,OBJPROP_PRICE,1,price);
-   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
    ObjectSetInteger(0,name,OBJPROP_STYLE,STYLE_DOT);
    ObjectSetInteger(0,name,OBJPROP_WIDTH,1);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
    ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,name,OBJPROP_RAY_RIGHT,true);
    ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
   }
 
-void DrawEqualLevel(const string prefix,const int index,const datetime startTime,const datetime currentTime,const double level,const string labelText,const color clr,const bool isHigh)
+void DrawEqualRange(const string prefix,const int id,const datetime left,const datetime right,const double level,const color clr)
   {
-   DrawStructureLine(prefix + "_LINE",index,startTime,currentTime,level,clr);
-   DrawStructureLabel(prefix + "_LBL",index,currentTime,level,clr,labelText,isHigh);
-  }
-
-void DrawRectangleZone(const string prefix,const int index,const datetime startTime,const datetime endTime,const double top,const double bottom,const color baseColor)
-  {
-   string name = BuildObjectName(prefix,index);
-   if(ObjectFind(0,name) < 0)
-      ObjectCreate(0,name,OBJ_RECTANGLE,0,startTime,top,endTime,bottom);
-
-   ObjectSetInteger(0,name,OBJPROP_TIME,0,startTime);
-   ObjectSetInteger(0,name,OBJPROP_TIME,1,endTime);
-   ObjectSetDouble(0,name,OBJPROP_PRICE,0,top);
-   ObjectSetDouble(0,name,OBJPROP_PRICE,1,bottom);
-   ObjectSetInteger(0,name,OBJPROP_COLOR,ColorToARGB(baseColor,50));
+   string name = BuildName(prefix,id);
+   if(ObjectFind(0,name)<0)
+      ObjectCreate(0,name,OBJ_RECTANGLE,0,left,level+_Point,right,level-_Point);
+   ObjectSetInteger(0,name,OBJPROP_TIME,0,left);
+   ObjectSetInteger(0,name,OBJPROP_TIME,1,right);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,0,level+_Point);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,1,level-_Point);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,ColorToARGB(clr,40));
+   ObjectSetInteger(0,name,OBJPROP_FILL,false);
    ObjectSetInteger(0,name,OBJPROP_BACK,true);
-   ObjectSetInteger(0,name,OBJPROP_FILL,true);
+   ObjectSetInteger(0,name,OBJPROP_STYLE,STYLE_DOT);
    ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
   }
 
-void DrawZoneLabel(const string prefix,const int index,const datetime t,const double price,const color clr,const string text)
+void RenderZone(const Zone &zone,const string prefix,const color baseColor,const int opacity,const datetime rightTime)
   {
-   string name = BuildObjectName(prefix,index);
-   if(ObjectFind(0,name) < 0)
-      ObjectCreate(0,name,OBJ_TEXT,0,t,price);
+   string rectName = BuildName(prefix+"RECT",zone.id);
+   string labelName = BuildName(prefix+"LBL",zone.id);
+   if(ObjectFind(0,rectName)<0)
+      ObjectCreate(0,rectName,OBJ_RECTANGLE,0,zone.startTime,zone.top,rightTime,zone.bottom);
+   ObjectSetInteger(0,rectName,OBJPROP_TIME,0,zone.startTime);
+   ObjectSetInteger(0,rectName,OBJPROP_TIME,1,rightTime);
+   ObjectSetDouble(0,rectName,OBJPROP_PRICE,0,zone.top);
+   ObjectSetDouble(0,rectName,OBJPROP_PRICE,1,zone.bottom);
+   ObjectSetInteger(0,rectName,OBJPROP_FILL,true);
+   ObjectSetInteger(0,rectName,OBJPROP_BACK,true);
+   ObjectSetInteger(0,rectName,OBJPROP_COLOR,ColorToARGB(baseColor,opacity));
+   ObjectSetInteger(0,rectName,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,rectName,OBJPROP_HIDDEN,true);
 
-   ObjectSetInteger(0,name,OBJPROP_TIME,0,t);
-   ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
-   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
-   ObjectSetInteger(0,name,OBJPROP_FONTSIZE,8);
-   ObjectSetInteger(0,name,OBJPROP_ANCHOR,ANCHOR_CENTER);
-   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
-   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
-   ObjectSetString(0,name,OBJPROP_TEXT,text);
+   double mid = 0.5*(zone.top+zone.bottom);
+   if(ObjectFind(0,labelName)<0)
+      ObjectCreate(0,labelName,OBJ_TEXT,0,rightTime,mid);
+   ObjectSetInteger(0,labelName,OBJPROP_TIME,0,rightTime);
+   ObjectSetDouble(0,labelName,OBJPROP_PRICE,0,mid);
+   ObjectSetInteger(0,labelName,OBJPROP_COLOR,baseColor);
+   ObjectSetInteger(0,labelName,OBJPROP_FONTSIZE,8);
+   ObjectSetInteger(0,labelName,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,labelName,OBJPROP_HIDDEN,true);
+   string text = prefix=="OB_" ? (zone.bullish?"Bull OB":"Bear OB") : (zone.bullish?"Bull FVG":"Bear FVG");
+   if(zone.mitigated && prefix=="OB_")
+      text += " \xE2\x9C\x93";
+   ObjectSetString(0,labelName,OBJPROP_TEXT,text);
   }
 
-void UpdatePivot(Pivot &ref,const double level,const datetime t,const int index)
+void DeleteZoneObjects(const string prefix,const int id)
   {
-   ref.lastLevel    = ref.currentLevel;
-   ref.currentLevel = level;
-   ref.crossed      = false;
-   ref.barTime      = t;
-   ref.barIndex     = index;
+   ObjectDelete(0,BuildName(prefix+"RECT",id));
+   ObjectDelete(0,BuildName(prefix+"LBL",id));
   }
 
-void SetBufferValue(double &buffer[],int rates_total,int chronologicalIndex,double value)
+void RemoveZone(Zone &zones[],const int index,const string prefix)
   {
-   if(chronologicalIndex<0 || chronologicalIndex>=rates_total)
+   if(index<0 || index>=ArraySize(zones))
       return;
-   int shift = rates_total - 1 - chronologicalIndex;
-   if(shift>=0 && shift<rates_total)
-      buffer[shift] = value;
+   DeleteZoneObjects(prefix,zones[index].id);
+   for(int i=index;i<ArraySize(zones)-1;++i)
+      zones[i]=zones[i+1];
+   ArrayResize(zones,ArraySize(zones)-1);
   }
 
-void ConfigureBuffer(const int bufferIndex,
-                     double &buffer[],
-                     ENUM_DRAW_TYPE drawType,
-                     color lineColor,
-                     int lineWidth=1,
-                     int arrowCode=0,
-                     const string label="")
+void PushZone(Zone &zones[],const Zone &zone,const string prefix)
   {
-   SetIndexBuffer(bufferIndex,buffer,INDICATOR_DATA);
-   PlotIndexSetInteger(bufferIndex,PLOT_DRAW_TYPE,drawType);
-   PlotIndexSetInteger(bufferIndex,PLOT_LINE_STYLE,STYLE_SOLID);
-   PlotIndexSetInteger(bufferIndex,PLOT_LINE_WIDTH,lineWidth);
-   PlotIndexSetInteger(bufferIndex,PLOT_LINE_COLOR,0,lineColor);
-   PlotIndexSetDouble(bufferIndex,PLOT_EMPTY_VALUE,EMPTY_VALUE);
-   if(drawType==DRAW_ARROW && arrowCode!=0)
-      PlotIndexSetInteger(bufferIndex,PLOT_ARROW,arrowCode);
-   if(label!="")
-      PlotIndexSetString(bufferIndex,PLOT_LABEL,label);
-   PlotIndexSetInteger(bufferIndex,PLOT_SHOW_DATA,true);
+   int size = ArraySize(zones);
+   ArrayResize(zones,size+1);
+   zones[size]=zone;
+   if(ArraySize(zones)>InpMaxZones)
+      RemoveZone(zones,0,prefix);
   }
 
-//+------------------------------------------------------------------+
-//| OnInit                                                           |
-//+------------------------------------------------------------------+
-int OnInit()
+//--- detection --------------------------------------------------------------
+bool IsSwingHigh(const double &highs[],int pivot,const int swingLen,const int total)
   {
-   IndicatorSetString(INDICATOR_SHORTNAME,"LuxAlgo SMC");
-   IndicatorSetInteger(INDICATOR_DIGITS,_Digits);
-
-   gPointSize = SymbolInfoDouble(_Symbol,SYMBOL_POINT);
-   gLastBufferSize     = 0;
-
-   ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBOSBuffer,DRAW_NONE,InpBullStructureColor,1,0,"Bullish BOS");
-   ConfigureBuffer(BUFFER_BEARISH_BOS,gBearishBOSBuffer,DRAW_NONE,InpBearStructureColor,1,0,"Bearish BOS");
-   ConfigureBuffer(BUFFER_BULLISH_CHOCH,gBullishChoChBuffer,DRAW_NONE,InpBullStructureColor,1,0,"Bullish CHoCH");
-   ConfigureBuffer(BUFFER_BEARISH_CHOCH,gBearishChoChBuffer,DRAW_NONE,InpBearStructureColor,1,0,"Bearish CHoCH");
-
-   ConfigureBuffer(BUFFER_BULLISH_OB_HIGH,gBullishOBHighBuffer,DRAW_NONE,InpBullOrderBlockColor,1,0,"Bullish OB High");
-   ConfigureBuffer(BUFFER_BULLISH_OB_LOW,gBullishOBLowBuffer,DRAW_NONE,InpBullOrderBlockColor,1,0,"Bullish OB Low");
-   ConfigureBuffer(BUFFER_BEARISH_OB_HIGH,gBearishOBHighBuffer,DRAW_NONE,InpBearOrderBlockColor,1,0,"Bearish OB High");
-   ConfigureBuffer(BUFFER_BEARISH_OB_LOW,gBearishOBLowBuffer,DRAW_NONE,InpBearOrderBlockColor,1,0,"Bearish OB Low");
-
-   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFVGHighBuffer,DRAW_NONE,InpBullFVGColor,1,0,"Bullish FVG High");
-   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFVGLowBuffer,DRAW_NONE,InpBullFVGColor,1,0,"Bullish FVG Low");
-   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFVGHighBuffer,DRAW_NONE,InpBearFVGColor,1,0,"Bearish FVG High");
-   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFVGLowBuffer,DRAW_NONE,InpBearFVGColor,1,0,"Bearish FVG Low");
-
-   ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighsBuffer,DRAW_NONE,InpEqualLevelColor,1,0,"Equal Highs");
-   ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowsBuffer,DRAW_NONE,InpEqualLevelColor,1,0,"Equal Lows");
-   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLiquidityGrabHighBuffer,DRAW_NONE,InpBearStructureColor,1,0,"Liquidity Grab High");
-   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLiquidityGrabLowBuffer,DRAW_NONE,InpBullStructureColor,1,0,"Liquidity Grab Low");
-   return(INIT_SUCCEEDED);
+   if(pivot<swingLen || pivot>=total-swingLen)
+      return false;
+   double price = highs[pivot];
+   for(int i=pivot-swingLen;i<pivot;i++)
+      if(highs[i] >= price)
+         return false;
+   for(int i=pivot+1;i<=pivot+swingLen;i++)
+      if(highs[i] > price)
+         return false;
+   return true;
   }
 
-//+------------------------------------------------------------------+
-//| OnCalculate                                                      |
-//+------------------------------------------------------------------+
-int OnCalculate(const int rates_total,
-                const int prev_calculated,
-                const datetime &time[],
-                const double &open[],
-                const double &high[],
-                const double &low[],
-                const double &close[],
-                const long &tick_volume[],
-                const long &volume[],
-                const int &spread[])
+bool IsSwingLow(const double &lows[],int pivot,const int swingLen,const int total)
   {
-   if(rates_total <= MathMax(InpSwingLength,InpInternalLength)+5)
-      return(0);
+   if(pivot<swingLen || pivot>=total-swingLen)
+      return false;
+   double price = lows[pivot];
+   for(int i=pivot-swingLen;i<pivot;i++)
+      if(lows[i] <= price)
+         return false;
+   for(int i=pivot+1;i<=pivot+swingLen;i++)
+      if(lows[i] < price)
+         return false;
+   return true;
+  }
 
-   EnsureAllBuffers(rates_total);
-   ArrayResize(gATRValue,rates_total);
+void RegisterSwingLabel(const SwingPoint &pt,const bool isHigh,const double prevPrice)
+  {
+   if(!InpShowSwingLabels || pt.index<0)
+      return;
+   ++gSwingLabelId;
+   string text;
+   if(prevPrice==0.0)
+      text = isHigh ? "HH" : "LL";
+   else if(isHigh)
+      text = (pt.price>prevPrice) ? "HH" : "LH";
+   else
+      text = (pt.price>prevPrice) ? "HL" : "LL";
+   color clr = isHigh ? InpBearStructureColor : InpBullStructureColor;
+   DrawTextLabel("SMC_SWING",gSwingLabelId,pt.time,pt.price,clr,text,isHigh?ANCHOR_LOWER:ANCHOR_UPPER);
+  }
 
-   // Build chronological arrays
-   static double highsChron[];
-   static double lowsChron[];
-   static double opensChron[];
-   static double closesChron[];
-   static datetime timesChron[];
-
-   ArrayResize(highsChron,rates_total);
-   ArrayResize(lowsChron,rates_total);
-   ArrayResize(opensChron,rates_total);
-   ArrayResize(closesChron,rates_total);
-   ArrayResize(timesChron,rates_total);
-
-   for(int i=0;i<rates_total;++i)
+void RegisterEqualLevel(const SwingPoint &first,const SwingPoint &second,const bool highLevel,const int rates_total)
+  {
+   ++gEqualLabelId;
+   color clr = highLevel ? InpEqualHighColor : InpEqualLowColor;
+   DrawEqualRange("SMC_EQR",gEqualLabelId,first.time,second.time,first.price,clr);
+   DrawDottedLine("SMC_EQD",gEqualLabelId,first.time,second.time,first.price,clr);
+   DrawTextLabel("SMC_EQL",gEqualLabelId,second.time,second.price,clr,highLevel?"EQH":"EQL",highLevel?ANCHOR_UPPER:ANCHOR_LOWER);
+   if(highLevel)
      {
-      int shift = rates_total-1-i;
-      highsChron[i]  = high[shift];
-      lowsChron[i]   = low[shift];
-      opensChron[i]  = open[shift];
-      closesChron[i] = close[shift];
-      timesChron[i]  = time[shift];
+      SetBufferValue(gEqualHighBuffer,rates_total,second.index,first.price);
+      gLastEqualHighPrice = first.price;
+      gLastEqualHighIndex = second.index;
      }
-
-   if(gPointSize<=0.0)
-      gPointSize = SymbolInfoDouble(_Symbol,SYMBOL_POINT);
-
-   // ATR calculation (simple Wilder smoothing)
-   double prevATR = 0.0;
-   for(int i=0;i<rates_total;++i)
+   else
      {
-      double tr = highsChron[i]-lowsChron[i];
-      if(i>0)
+      SetBufferValue(gEqualLowBuffer,rates_total,second.index,first.price);
+      gLastEqualLowPrice = first.price;
+      gLastEqualLowIndex = second.index;
+     }
+  }
+
+void MarkStructure(const SwingPoint &pivot,const datetime eventTime,const bool bullish,const bool choch)
+  {
+   if(!InpShowStructure)
+      return;
+   ++gStructureLabelId;
+   color clr = bullish ? InpBullStructureColor : InpBearStructureColor;
+   string text = choch?"CHoCH":"BOS";
+   DrawTextLabel("SMC_STR",gStructureLabelId,eventTime,pivot.price,clr,text,bullish?ANCHOR_LOWER:ANCHOR_UPPER);
+   DrawDottedLine("SMC_STR",gStructureLabelId,pivot.time,eventTime,pivot.price,clr);
+  }
+
+void AddOrderBlock(const int chronoIndex,const bool bullish,const double &opens[],const double &closes[],const datetime &times[],const int rates_total)
+  {
+   if(!InpShowOrderBlocks)
+      return;
+   for(int idx=chronoIndex-1; idx>=0; --idx)
+     {
+      bool candleBear = closes[idx] < opens[idx];
+      bool candleBull = closes[idx] > opens[idx];
+      if(bullish && candleBear)
         {
-         double tr1 = MathAbs(highsChron[i]-closesChron[i-1]);
-         double tr2 = MathAbs(lowsChron[i]-closesChron[i-1]);
-         tr = MathMax(tr,MathMax(tr1,tr2));
+         Zone z;
+         z.bullish = true;
+         z.startTime = times[idx];
+         z.mitigated = false;
+         z.id = gNextZoneId++;
+         z.top = MathMax(opens[idx],closes[idx]);
+         z.bottom = MathMin(opens[idx],closes[idx]);
+         PushZone(gObZones,z,"OB_");
+         SetBufferValue(gBullishOBHighBuffer,rates_total,chronoIndex,z.top);
+         SetBufferValue(gBullishOBLowBuffer,rates_total,chronoIndex,z.bottom);
+         return;
         }
-      if(i==0)
-         prevATR = tr;
+      if(!bullish && candleBull)
+        {
+         Zone z;
+         z.bullish = false;
+         z.startTime = times[idx];
+         z.mitigated = false;
+         z.id = gNextZoneId++;
+         z.top = MathMax(opens[idx],closes[idx]);
+         z.bottom = MathMin(opens[idx],closes[idx]);
+         PushZone(gObZones,z,"OB_");
+         SetBufferValue(gBearishOBHighBuffer,rates_total,chronoIndex,z.top);
+         SetBufferValue(gBearishOBLowBuffer,rates_total,chronoIndex,z.bottom);
+         return;
+        }
+     }
+  }
+
+void AddFvg(const int chronoIndex,const bool bullish,const double top,const double bottom,const datetime startTime,const int rates_total)
+  {
+   if(!InpShowFVG)
+      return;
+   Zone z;
+   z.bullish = bullish;
+   z.top = top;
+   z.bottom = bottom;
+   z.startTime = startTime;
+   z.mitigated = false;
+   z.id = gNextZoneId++;
+   PushZone(gFvgZones,z,"FVG_");
+   if(bullish)
+     {
+      SetBufferValue(gBullishFvgHighBuffer,rates_total,chronoIndex,top);
+      SetBufferValue(gBullishFvgLowBuffer,rates_total,chronoIndex,bottom);
+     }
+   else
+     {
+      SetBufferValue(gBearishFvgHighBuffer,rates_total,chronoIndex,top);
+      SetBufferValue(gBearishFvgLowBuffer,rates_total,chronoIndex,bottom);
+     }
+  }
+
+void UpdateOrderBlocks(const double high,const double low)
+  {
+   for(int i=ArraySize(gObZones)-1;i>=0;--i)
+     {
+      if(gObZones[i].mitigated)
+         continue;
+      if(gObZones[i].bullish)
+        {
+         if(low <= gObZones[i].top && high >= gObZones[i].bottom)
+            gObZones[i].mitigated = true;
+        }
       else
-         prevATR = (prevATR*(InpATRPeriod-1)+tr)/InpATRPeriod;
-      gATRValue[i] = prevATR;
-     }
-
-   int previousSwingLeg    = LEG_BEARISH;
-   int previousInternalLeg = LEG_BEARISH;
-
-   datetime latestBarTime = timesChron[rates_total-1];
-
-   FVGEvent fvgEvents[];
-   ArrayResize(fvgEvents,0);
-
-   if(prev_calculated==0 && InpShowFairValueGaps)
-     {
-      ObjectsDeleteAll(0,"SMC_FVG_BULL");
-      ObjectsDeleteAll(0,"SMC_FVG_BEAR");
-     }
-
-   ResetState();
-
-   for(int i=0;i<rates_total;++i)
-     {
-      int swingLeg    = LegDirection(highsChron,lowsChron,i,InpSwingLength);
-      int internalLeg = LegDirection(highsChron,lowsChron,i,InpInternalLength);
-
-      if(InpShowFairValueGaps)
         {
-         int fvgCount = ArraySize(fvgEvents);
-         for(int f=0; f<fvgCount; ++f)
-           {
-            if(!fvgEvents[f].active)
-               continue;
-            if(fvgEvents[f].bullish)
-              {
-               if(lowsChron[i] <= fvgEvents[f].bottom)
-                  fvgEvents[f].active = false;
-              }
-            else
-              {
-               if(highsChron[i] >= fvgEvents[f].top)
-                  fvgEvents[f].active = false;
-              }
-           }
-        }
-
-      bool newSwingPivot    = StartOfNewLeg(previousSwingLeg,swingLeg);
-      bool newInternalPivot = StartOfNewLeg(previousInternalLeg,internalLeg);
-
-      if(newSwingPivot)
-        {
-         if(StartOfBullishLeg(previousSwingLeg,swingLeg))
-           {
-            UpdatePivot(gSwingLow,lowsChron[i],timesChron[i],i);
-           }
-         else if(StartOfBearishLeg(previousSwingLeg,swingLeg))
-           {
-            UpdatePivot(gSwingHigh,highsChron[i],timesChron[i],i);
-           }
-        }
-
-      if(newInternalPivot)
-        {
-         if(StartOfBullishLeg(previousInternalLeg,internalLeg))
-            UpdatePivot(gInternalLow,lowsChron[i],timesChron[i],i);
-         else if(StartOfBearishLeg(previousInternalLeg,internalLeg))
-            UpdatePivot(gInternalHigh,highsChron[i],timesChron[i],i);
-        }
-
-      previousSwingLeg    = swingLeg;
-      previousInternalLeg = internalLeg;
-
-      // Structure detection for internal trend
-      if(gInternalHigh.barIndex>=0 && !gInternalHigh.crossed && closesChron[i] > gInternalHigh.currentLevel)
-        {
-         bool choch = (gInternalTrend.bias == -1);
-         gInternalHigh.crossed = true;
-         gInternalTrend.bias   = 1;
-         if(choch)
-            PushBufferValue(BUFFER_BULLISH_CHOCH,rates_total,i,gInternalHigh.currentLevel);
-         else
-            PushBufferValue(BUFFER_BULLISH_BOS,rates_total,i,gInternalHigh.currentLevel);
-        }
-      if(gInternalLow.barIndex>=0 && !gInternalLow.crossed && closesChron[i] < gInternalLow.currentLevel)
-        {
-         bool choch = (gInternalTrend.bias == 1);
-         gInternalLow.crossed = true;
-         gInternalTrend.bias  = -1;
-         if(choch)
-            PushBufferValue(BUFFER_BEARISH_CHOCH,rates_total,i,gInternalLow.currentLevel);
-         else
-            PushBufferValue(BUFFER_BEARISH_BOS,rates_total,i,gInternalLow.currentLevel);
-        }
-
-      // Swing structures
-      if(gSwingHigh.barIndex>=0 && !gSwingHigh.crossed && closesChron[i] > gSwingHigh.currentLevel)
-        {
-         gSwingHigh.crossed = true;
-         bool choch = (gSwingTrend.bias==-1);
-         gSwingTrend.bias = 1;
-         double level     = gSwingHigh.currentLevel;
-         datetime pivotTime = timesChron[gSwingHigh.barIndex];
-         datetime eventTime = timesChron[i];
-
-         if(choch)
-           {
-            PushBufferValue(BUFFER_BULLISH_CHOCH,rates_total,i,level);
-            DrawStructureLabel("SMC_CHOCH_BULL_LBL",i,eventTime,level,InpBullStructureColor,"CHoCH",true);
-            DrawStructureLine("SMC_CHOCH_BULL_LINE",gSwingHigh.barIndex,pivotTime,latestBarTime,level,InpBullStructureColor);
-           }
-         else
-           {
-            PushBufferValue(BUFFER_BULLISH_BOS,rates_total,i,level);
-            DrawStructureLabel("SMC_BOS_BULL_LBL",i,eventTime,level,InpBullStructureColor,"BOS",true);
-            DrawStructureLine("SMC_BOS_BULL_LINE",gSwingHigh.barIndex,pivotTime,latestBarTime,level,InpBullStructureColor);
-           }
-
-         if(InpShowOrderBlocks)
-           {
-            int startIndex = gSwingHigh.barIndex;
-            if(startIndex<0)
-               startIndex = 0;
-            int endIndex = i;
-            if(endIndex<startIndex)
-               endIndex = startIndex;
-            int length = endIndex - startIndex + 1;
-            if(length>0)
-              {
-               int maxIndex = HighestIndex(highsChron,startIndex,length);
-               int minIndex = LowestIndex(lowsChron,startIndex,length);
-               double obHigh = highsChron[maxIndex];
-               double obLow  = lowsChron[minIndex];
-               PushBufferValue(BUFFER_BULLISH_OB_HIGH,rates_total,i,obHigh);
-               PushBufferValue(BUFFER_BULLISH_OB_LOW,rates_total,i,obLow);
-               DrawRectangleZone("SMC_OB_BULL",startIndex,timesChron[startIndex],latestBarTime,obHigh,obLow,InpBullOrderBlockColor);
-               DrawZoneLabel("SMC_OB_BULL_TAG",startIndex,latestBarTime,0.5*(obHigh+obLow),InpBullOrderBlockColor,"Bull OB");
-              }
-           }
-        }
-
-      if(gSwingLow.barIndex>=0 && !gSwingLow.crossed && closesChron[i] < gSwingLow.currentLevel)
-        {
-         gSwingLow.crossed = true;
-         bool choch = (gSwingTrend.bias==1);
-         gSwingTrend.bias = -1;
-         double level      = gSwingLow.currentLevel;
-         datetime pivotTime = timesChron[gSwingLow.barIndex];
-         datetime eventTime = timesChron[i];
-
-         if(choch)
-           {
-            PushBufferValue(BUFFER_BEARISH_CHOCH,rates_total,i,level);
-            DrawStructureLabel("SMC_CHOCH_BEAR_LBL",i,eventTime,level,InpBearStructureColor,"CHoCH",false);
-            DrawStructureLine("SMC_CHOCH_BEAR_LINE",gSwingLow.barIndex,pivotTime,latestBarTime,level,InpBearStructureColor);
-           }
-         else
-           {
-            PushBufferValue(BUFFER_BEARISH_BOS,rates_total,i,level);
-            DrawStructureLabel("SMC_BOS_BEAR_LBL",i,eventTime,level,InpBearStructureColor,"BOS",false);
-            DrawStructureLine("SMC_BOS_BEAR_LINE",gSwingLow.barIndex,pivotTime,latestBarTime,level,InpBearStructureColor);
-           }
-
-         if(InpShowOrderBlocks)
-           {
-            int startIndex = gSwingLow.barIndex;
-            if(startIndex<0)
-               startIndex = 0;
-            int endIndex = i;
-            if(endIndex<startIndex)
-               endIndex = startIndex;
-            int length = endIndex - startIndex + 1;
-            if(length>0)
-              {
-               int maxIndex = HighestIndex(highsChron,startIndex,length);
-               int minIndex = LowestIndex(lowsChron,startIndex,length);
-               double obHigh = highsChron[maxIndex];
-               double obLow  = lowsChron[minIndex];
-               PushBufferValue(BUFFER_BEARISH_OB_HIGH,rates_total,i,obHigh);
-               PushBufferValue(BUFFER_BEARISH_OB_LOW,rates_total,i,obLow);
-               DrawRectangleZone("SMC_OB_BEAR",startIndex,timesChron[startIndex],latestBarTime,obHigh,obLow,InpBearOrderBlockColor);
-               DrawZoneLabel("SMC_OB_BEAR_TAG",startIndex,latestBarTime,0.5*(obHigh+obLow),InpBearOrderBlockColor,"Bear OB");
-              }
-           }
-        }
-
-      // Equal highs / lows detection
-      bool equalHighDetected = false;
-      bool equalLowDetected  = false;
-      if(i>=InpEqualLength && gSwingHigh.barIndex>=0 && MathAbs(highsChron[i]-gSwingHigh.currentLevel) <= InpEqualThreshold*gATRValue[i])
-        {
-         PushBufferValue(BUFFER_EQ_HIGHS,rates_total,i,gSwingHigh.currentLevel);
-         DrawEqualLevel("SMC_EQ_HIGH",gSwingHigh.barIndex,timesChron[gSwingHigh.barIndex],timesChron[i],gSwingHigh.currentLevel,"EQH",InpEqualLevelColor,true);
-         gLastEqualHigh      = gSwingHigh.currentLevel;
-         gLastEqualHighIndex = i;
-         equalHighDetected   = true;
-        }
-      if(i>=InpEqualLength && gSwingLow.barIndex>=0 && MathAbs(lowsChron[i]-gSwingLow.currentLevel) <= InpEqualThreshold*gATRValue[i])
-        {
-         PushBufferValue(BUFFER_EQ_LOWS,rates_total,i,gSwingLow.currentLevel);
-         DrawEqualLevel("SMC_EQ_LOW",gSwingLow.barIndex,timesChron[gSwingLow.barIndex],timesChron[i],gSwingLow.currentLevel,"EQL",InpEqualLevelColor,false);
-         gLastEqualLow      = gSwingLow.currentLevel;
-         gLastEqualLowIndex = i;
-         equalLowDetected   = true;
-        }
-
-      if(!equalHighDetected && gLastEqualHighIndex>=0 && highsChron[i] > gLastEqualHigh && closesChron[i] < gLastEqualHigh)
-        {
-         PushBufferValue(BUFFER_LIQUIDITY_GRAB_HIGH,rates_total,i,gLastEqualHigh);
-         DrawStructureLabel("SMC_LG_HIGH",i,timesChron[i],gLastEqualHigh,InpBearStructureColor,"LG",true);
-         gLastEqualHighIndex = -1;
-        }
-      if(!equalLowDetected && gLastEqualLowIndex>=0 && lowsChron[i] < gLastEqualLow && closesChron[i] > gLastEqualLow)
-        {
-         PushBufferValue(BUFFER_LIQUIDITY_GRAB_LOW,rates_total,i,gLastEqualLow);
-         DrawStructureLabel("SMC_LG_LOW",i,timesChron[i],gLastEqualLow,InpBullStructureColor,"LG",false);
-         gLastEqualLowIndex = -1;
-        }
-
-      // Fair Value Gaps (simplified)
-      if(InpShowFairValueGaps && i>=2)
-        {
-         double lastClose = closesChron[i-1];
-         double lastOpen  = opensChron[i-1];
-         double last2High = highsChron[i-2];
-         double last2Low  = lowsChron[i-2];
-         double currHigh  = highsChron[i];
-         double currLow   = lowsChron[i];
-         double timeframeFactor = 1.0;
-         int chartSeconds = PeriodSeconds(Period());
-         int fvgSeconds   = PeriodSeconds(InpFVGTimeframe);
-         if(InpFVGTimeframe!=PERIOD_CURRENT && chartSeconds>0 && fvgSeconds>0)
-           timeframeFactor = (double)fvgSeconds/chartSeconds;
-         double threshold = InpAutoFVGThreshold ? gATRValue[i]*0.05*timeframeFactor : 0.0;
-
-         bool bullishFVG = currLow > last2High && lastClose > last2High && (lastClose-lastOpen) > threshold;
-         bool bearishFVG = currHigh < last2Low && lastClose < last2Low && (lastOpen-lastClose) > threshold;
-
-         if(bullishFVG)
-           {
-            PushBufferValue(BUFFER_BULLISH_FVG_HIGH,rates_total,i,currLow);
-            PushBufferValue(BUFFER_BULLISH_FVG_LOW,rates_total,i,last2High);
-            int newIndex = ArraySize(fvgEvents);
-            ArrayResize(fvgEvents,newIndex+1);
-            fvgEvents[newIndex].bullish    = true;
-            fvgEvents[newIndex].active     = true;
-            fvgEvents[newIndex].top        = currLow;
-            fvgEvents[newIndex].bottom     = last2High;
-            fvgEvents[newIndex].leftTime   = timesChron[i-1];
-            fvgEvents[newIndex].startIndex = i;
-           }
-         if(bearishFVG)
-           {
-            PushBufferValue(BUFFER_BEARISH_FVG_HIGH,rates_total,i,last2Low);
-            PushBufferValue(BUFFER_BEARISH_FVG_LOW,rates_total,i,currHigh);
-            int newIndex = ArraySize(fvgEvents);
-            ArrayResize(fvgEvents,newIndex+1);
-            fvgEvents[newIndex].bullish    = false;
-            fvgEvents[newIndex].active     = true;
-            fvgEvents[newIndex].top        = last2Low;
-            fvgEvents[newIndex].bottom     = currHigh;
-            fvgEvents[newIndex].leftTime   = timesChron[i-1];
-            fvgEvents[newIndex].startIndex = i;
-          }
+         if(high >= gObZones[i].bottom && low <= gObZones[i].top)
+            gObZones[i].mitigated = true;
         }
      }
+  }
 
-   // Render fair value gaps after processing all bars
-   if(InpShowFairValueGaps)
+void UpdateFvgs(const double high,const double low)
+  {
+   for(int i=ArraySize(gFvgZones)-1;i>=0;--i)
      {
-      int fvgCount = ArraySize(fvgEvents);
-      int extendBars = (int)MathMax(0,InpFVGExtend);
-      long barSpacing = 0;
-      if(rates_total>1)
-         barSpacing = (long)(timesChron[rates_total-1]-timesChron[rates_total-2]);
-      if(barSpacing<=0)
-         barSpacing = PeriodSeconds(Period());
-
-      for(int f=0; f<fvgCount; ++f)
+      bool remove = false;
+      if(gFvgZones[i].bullish)
         {
-         string rectPrefix  = fvgEvents[f].bullish ? "SMC_FVG_BULL" : "SMC_FVG_BEAR";
-         string labelPrefix = fvgEvents[f].bullish ? "SMC_FVG_BULL_TAG" : "SMC_FVG_BEAR_TAG";
+         if(low <= gFvgZones[i].bottom)
+            remove = true;
+        }
+      else
+        {
+         if(high >= gFvgZones[i].top)
+            remove = true;
+        }
+      if(remove)
+         RemoveZone(gFvgZones,i,"FVG_");
+     }
+  }
 
-         if(fvgEvents[f].active)
-           {
-            datetime rightTime = latestBarTime;
-            if(extendBars>0 && barSpacing>0)
-               rightTime += (datetime)(extendBars*barSpacing);
+void RenderZones(const datetime latestTime,const long barSeconds)
+  {
+   datetime rightTime = latestTime + (datetime)(InpExtendRightBars*barSeconds);
+   if(InpShowFVG)
+     {
+      for(int i=0;i<ArraySize(gFvgZones);++i)
+         RenderZone(gFvgZones[i],"FVG_",gFvgZones[i].bullish?InpBullFVGColor:InpBearFVGColor,InpZoneOpacityActive,rightTime);
+     }
+   else
+     {
+      DeleteObjectByPrefix("FVG_");
+      ArrayResize(gFvgZones,0);
+     }
 
-            double top    = fvgEvents[f].top;
-            double bottom = fvgEvents[f].bottom;
-            if(top < bottom)
-              {
-               double tmp = top;
-               top        = bottom;
-               bottom     = tmp;
-              }
-
-            color zoneColor = fvgEvents[f].bullish ? InpBullFVGColor : InpBearFVGColor;
-            DrawRectangleZone(rectPrefix,f,fvgEvents[f].leftTime,rightTime,top,bottom,zoneColor);
-            DrawZoneLabel(labelPrefix,f,rightTime,0.5*(top+bottom),zoneColor,fvgEvents[f].bullish ? "Bull FVG" : "Bear FVG");
-           }
-         else
-           {
-            ObjectDelete(0,BuildObjectName(rectPrefix,f));
-            ObjectDelete(0,BuildObjectName(labelPrefix,f));
-           }
+   if(InpShowOrderBlocks)
+     {
+      for(int i=0;i<ArraySize(gObZones);++i)
+        {
+         int opacity = gObZones[i].mitigated ? InpZoneOpacityMitigated : InpZoneOpacityActive;
+         RenderZone(gObZones[i],"OB_",gObZones[i].bullish?InpBullOBColor:InpBearOBColor,opacity,rightTime);
         }
      }
    else
      {
-      ObjectsDeleteAll(0,"SMC_FVG_BULL");
-      ObjectsDeleteAll(0,"SMC_FVG_BEAR");
+      DeleteObjectByPrefix("OB_");
+      ArrayResize(gObZones,0);
      }
+  }
+
+//--- indicator configuration -------------------------------------------------
+void ConfigureBuffer(const int index,double &buffer[],const string label)
+  {
+   SetIndexBuffer(index,buffer,INDICATOR_DATA);
+   PlotIndexSetInteger(index,PLOT_DRAW_TYPE,DRAW_NONE);
+   PlotIndexSetString(index,PLOT_LABEL,label);
+   PlotIndexSetInteger(index,PLOT_SHOW_DATA,true);
+   PlotIndexSetDouble(index,PLOT_EMPTY_VALUE,EMPTY_VALUE);
+  }
+
+int OnInit()
+  {
+   IndicatorSetString(INDICATOR_SHORTNAME,"SMC Structure");
+   IndicatorSetInteger(INDICATOR_DIGITS,_Digits);
+
+   ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBosBuffer,"Bullish BOS");
+   ConfigureBuffer(BUFFER_BEARISH_BOS,gBearishBosBuffer,"Bearish BOS");
+   ConfigureBuffer(BUFFER_BULLISH_CHOCH,gBullishChochBuffer,"Bullish CHoCH");
+   ConfigureBuffer(BUFFER_BEARISH_CHOCH,gBearishChochBuffer,"Bearish CHoCH");
+   ConfigureBuffer(BUFFER_BULLISH_OB_HIGH,gBullishOBHighBuffer,"Bull OB High");
+   ConfigureBuffer(BUFFER_BULLISH_OB_LOW,gBullishOBLowBuffer,"Bull OB Low");
+   ConfigureBuffer(BUFFER_BEARISH_OB_HIGH,gBearishOBHighBuffer,"Bear OB High");
+   ConfigureBuffer(BUFFER_BEARISH_OB_LOW,gBearishOBLowBuffer,"Bear OB Low");
+   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFvgHighBuffer,"Bull FVG High");
+   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFvgLowBuffer,"Bull FVG Low");
+   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFvgHighBuffer,"Bear FVG High");
+   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFvgLowBuffer,"Bear FVG Low");
+   ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighBuffer,"Equal High");
+   ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowBuffer,"Equal Low");
+   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLgHighBuffer,"Liquidity Grab High");
+   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLgLowBuffer,"Liquidity Grab Low");
+
+   ResetState();
+   return(INIT_SUCCEEDED);
+  }
+
+void OnDeinit(const int reason)
+  {
+   DeleteObjectByPrefix("SMC_STR");
+   DeleteObjectByPrefix("SMC_EQR");
+   DeleteObjectByPrefix("SMC_EQD");
+   DeleteObjectByPrefix("SMC_EQL");
+   DeleteObjectByPrefix("SMC_SWING");
+   DeleteObjectByPrefix("SMC_LG");
+   DeleteObjectByPrefix("OB_");
+   DeleteObjectByPrefix("FVG_");
+  }
+
+//--- main calculation -------------------------------------------------------
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const int begin,
+                const double &price[])
+  {
+   if(rates_total<=InpSwingLength*2)
+      return(0);
+
+   EnsureBuffers(rates_total);
+
+   MqlRates rates[];
+   ArraySetAsSeries(rates,true);
+   if(CopyRates(_Symbol,_Period,0,rates_total,rates)<=0)
+      return(prev_calculated);
+
+   double highs[];
+   double lows[];
+   double opens[];
+   double closes[];
+   datetime times[];
+
+   ArrayResize(highs,rates_total);
+   ArrayResize(lows,rates_total);
+   ArrayResize(opens,rates_total);
+   ArrayResize(closes,rates_total);
+   ArrayResize(times,rates_total);
+
+   for(int c=0;c<rates_total;++c)
+     {
+      int idx = rates_total-1-c;
+      highs[c]  = rates[idx].high;
+      lows[c]   = rates[idx].low;
+      opens[c]  = rates[idx].open;
+      closes[c] = rates[idx].close;
+      times[c]  = rates[idx].time;
+     }
+
+   int lastClosed = rates_total-2;
+   if(lastClosed<InpSwingLength)
+      return(prev_calculated);
+
+   if(prev_calculated==0)
+     {
+      ResetState();
+      DeleteObjectByPrefix("SMC_STR");
+      DeleteObjectByPrefix("SMC_EQR");
+      DeleteObjectByPrefix("SMC_EQD");
+      DeleteObjectByPrefix("SMC_EQL");
+      DeleteObjectByPrefix("SMC_SWING");
+      DeleteObjectByPrefix("SMC_LG");
+      DeleteObjectByPrefix("OB_");
+      DeleteObjectByPrefix("FVG_");
+     }
+
+   int startIndex = MathMax(gLastProcessedIndex+1,InpSwingLength);
+   if(startIndex<InpSwingLength)
+      startIndex = InpSwingLength;
+   if(startIndex>lastClosed)
+      return(rates_total);
+
+   for(int chrono=startIndex; chrono<=lastClosed; ++chrono)
+     {
+      ClearBuffersAtIndex(rates_total,chrono);
+
+      int pivot = chrono - InpSwingLength;
+      if(pivot>=0)
+        {
+         if(IsSwingHigh(highs,pivot,InpSwingLength,rates_total))
+           {
+            gPrevSwingHigh = gLastSwingHigh;
+            gLastSwingHigh.index = pivot;
+            gLastSwingHigh.price = highs[pivot];
+            gLastSwingHigh.time  = times[pivot];
+            double prevPrice = (gPrevSwingHigh.index>=0) ? gPrevSwingHigh.price : 0.0;
+            RegisterSwingLabel(gLastSwingHigh,true,prevPrice);
+            if(gPrevSwingHigh.index>=0 && InpShowEqualLevels)
+              {
+               double diff = MathAbs(gPrevSwingHigh.price - gLastSwingHigh.price);
+               if(diff <= InpMinEQTicks*_Point)
+                  RegisterEqualLevel(gPrevSwingHigh,gLastSwingHigh,true,rates_total);
+              }
+           }
+         if(IsSwingLow(lows,pivot,InpSwingLength,rates_total))
+           {
+            gPrevSwingLow = gLastSwingLow;
+            gLastSwingLow.index = pivot;
+            gLastSwingLow.price = lows[pivot];
+            gLastSwingLow.time  = times[pivot];
+            double prevPrice = (gPrevSwingLow.index>=0) ? gPrevSwingLow.price : 0.0;
+            RegisterSwingLabel(gLastSwingLow,false,prevPrice);
+            if(gPrevSwingLow.index>=0 && InpShowEqualLevels)
+              {
+               double diff = MathAbs(gPrevSwingLow.price - gLastSwingLow.price);
+               if(diff <= InpMinEQTicks*_Point)
+                  RegisterEqualLevel(gPrevSwingLow,gLastSwingLow,false,rates_total);
+              }
+           }
+        }
+
+      double close = closes[chrono];
+      double high  = highs[chrono];
+      double low   = lows[chrono];
+
+      if(gLastSwingHigh.index>=0 && close>gLastSwingHigh.price && gLastSwingHigh.index!=gLastBrokenHighSource)
+        {
+         bool choch = (gTrendDirection<=0);
+         if(choch && !InpShowChoCh)
+            choch = false;
+         gTrendDirection = 1;
+         if(choch)
+            SetBufferValue(gBullishChochBuffer,rates_total,chrono,gLastSwingHigh.price);
+         else
+            SetBufferValue(gBullishBosBuffer,rates_total,chrono,gLastSwingHigh.price);
+         MarkStructure(gLastSwingHigh,times[chrono],true,choch);
+         AddOrderBlock(chrono,true,opens,closes,times,rates_total);
+         gLastBrokenHighSource = gLastSwingHigh.index;
+        }
+      if(gLastSwingLow.index>=0 && close<gLastSwingLow.price && gLastSwingLow.index!=gLastBrokenLowSource)
+        {
+         bool choch = (gTrendDirection>=0);
+         if(choch && !InpShowChoCh)
+            choch = false;
+         gTrendDirection = -1;
+         if(choch)
+            SetBufferValue(gBearishChochBuffer,rates_total,chrono,gLastSwingLow.price);
+         else
+            SetBufferValue(gBearishBosBuffer,rates_total,chrono,gLastSwingLow.price);
+         MarkStructure(gLastSwingLow,times[chrono],false,choch);
+         AddOrderBlock(chrono,false,opens,closes,times,rates_total);
+         gLastBrokenLowSource = gLastSwingLow.index;
+        }
+
+      if(gLastEqualHighIndex>=0 && high>gLastEqualHighPrice && close<gLastEqualHighPrice)
+        {
+         SetBufferValue(gLgHighBuffer,rates_total,chrono,gLastEqualHighPrice);
+         DrawTextLabel("SMC_LG",chrono,times[chrono],gLastEqualHighPrice,InpBearStructureColor,"LG",ANCHOR_LOWER);
+         gLastEqualHighIndex = -1;
+        }
+      if(gLastEqualLowIndex>=0 && low<gLastEqualLowPrice && close>gLastEqualLowPrice)
+        {
+         SetBufferValue(gLgLowBuffer,rates_total,chrono,gLastEqualLowPrice);
+         DrawTextLabel("SMC_LG",chrono,times[chrono],gLastEqualLowPrice,InpBullStructureColor,"LG",ANCHOR_UPPER);
+         gLastEqualLowIndex = -1;
+        }
+
+      if(InpShowFVG && chrono>=2)
+        {
+         double low2 = lows[chrono-2];
+         double high2 = highs[chrono-2];
+         bool bullGap = lows[chrono] > high2 && closes[chrono-1] > high2;
+         bool bearGap = highs[chrono] < low2 && closes[chrono-1] < low2;
+         if(bullGap)
+            AddFvg(chrono,true,lows[chrono],high2,times[chrono-2],rates_total);
+         if(bearGap)
+            AddFvg(chrono,false,low2,highs[chrono],times[chrono-2],rates_total);
+        }
+
+      UpdateOrderBlocks(high,low);
+      UpdateFvgs(high,low);
+
+      gLastProcessedIndex = chrono;
+     }
+
+   datetime latestTime = times[lastClosed];
+   long barSeconds = PeriodSeconds(_Period);
+   if(barSeconds<=0 && lastClosed>0)
+      barSeconds = (long)(times[lastClosed]-times[lastClosed-1]);
+   RenderZones(latestTime,barSeconds);
 
    return(rates_total);
   }
-
-//+------------------------------------------------------------------+
