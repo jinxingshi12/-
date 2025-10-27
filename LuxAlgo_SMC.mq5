@@ -74,10 +74,8 @@ input color    InpBullStructureColor = clrLimeGreen;
 input color    InpBearStructureColor = clrTomato;
 input color    InpEqualHighColor     = clrTurquoise;
 input color    InpEqualLowColor      = clrLightCoral;
-input color    InpBullOBColor        = clrSkyBlue;
-input color    InpBearOBColor        = clrLightPink;
-input color    InpBullFVGColor       = clrGainsboro;
-input color    InpBearFVGColor       = clrLightSteelBlue;
+input color    InpBearZoneColor      = clrLightPink;
+input color    InpFvgColor           = clrGainsboro;
 input int      InpZoneOpacityActive  = 60;
 input int      InpZoneOpacityMitigated = 25;
 
@@ -155,35 +153,6 @@ string BuildName(const string prefix,const int id)
    return prefix+"_"+IntegerToString(id);
   }
 
-void EnsureBuffer(double &buffer[],const int size)
-  {
-   if(ArraySize(buffer)==size)
-      return;
-   ArrayResize(buffer,size);
-   ArraySetAsSeries(buffer,true);
-   ArrayInitialize(buffer,EMPTY_VALUE);
-  }
-
-void EnsureBuffers(const int rates_total)
-  {
-   EnsureBuffer(gBullishBosBuffer,rates_total);
-   EnsureBuffer(gBearishBosBuffer,rates_total);
-   EnsureBuffer(gBullishChochBuffer,rates_total);
-   EnsureBuffer(gBearishChochBuffer,rates_total);
-   EnsureBuffer(gBullishOBHighBuffer,rates_total);
-   EnsureBuffer(gBullishOBLowBuffer,rates_total);
-   EnsureBuffer(gBearishOBHighBuffer,rates_total);
-   EnsureBuffer(gBearishOBLowBuffer,rates_total);
-   EnsureBuffer(gBullishFvgHighBuffer,rates_total);
-   EnsureBuffer(gBullishFvgLowBuffer,rates_total);
-   EnsureBuffer(gBearishFvgHighBuffer,rates_total);
-   EnsureBuffer(gBearishFvgLowBuffer,rates_total);
-   EnsureBuffer(gEqualHighBuffer,rates_total);
-   EnsureBuffer(gEqualLowBuffer,rates_total);
-   EnsureBuffer(gLgHighBuffer,rates_total);
-   EnsureBuffer(gLgLowBuffer,rates_total);
-  }
-
 int SeriesIndex(const int rates_total,const int chronoIndex)
   {
    return rates_total-1-chronoIndex;
@@ -194,7 +163,8 @@ void SetBufferValue(double &buffer[],const int rates_total,const int chronoIndex
    if(chronoIndex<0 || chronoIndex>=rates_total)
       return;
    int shift = SeriesIndex(rates_total,chronoIndex);
-   if(shift>=0 && shift<rates_total)
+   int bufferSize = ArraySize(buffer);
+   if(shift>=0 && shift<bufferSize)
       buffer[shift] = value;
   }
 
@@ -257,23 +227,6 @@ void DrawDottedLine(const string prefix,const int id,const datetime fromTime,con
    ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
    ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,name,OBJPROP_RAY_RIGHT,true);
-   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
-  }
-
-void DrawEqualRange(const string prefix,const int id,const datetime left,const datetime right,const double level,const color clr)
-  {
-   string name = BuildName(prefix,id);
-   if(ObjectFind(0,name)<0)
-      ObjectCreate(0,name,OBJ_RECTANGLE,0,left,level+_Point,right,level-_Point);
-   ObjectSetInteger(0,name,OBJPROP_TIME,0,left);
-   ObjectSetInteger(0,name,OBJPROP_TIME,1,right);
-   ObjectSetDouble(0,name,OBJPROP_PRICE,0,level+_Point);
-   ObjectSetDouble(0,name,OBJPROP_PRICE,1,level-_Point);
-   ObjectSetInteger(0,name,OBJPROP_COLOR,ColorToARGB(clr,40));
-   ObjectSetInteger(0,name,OBJPROP_FILL,false);
-   ObjectSetInteger(0,name,OBJPROP_BACK,true);
-   ObjectSetInteger(0,name,OBJPROP_STYLE,STYLE_DOT);
-   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
   }
 
@@ -382,19 +335,18 @@ void RegisterEqualLevel(const SwingPoint &first,const SwingPoint &second,const b
   {
    ++gEqualLabelId;
    color clr = highLevel ? InpEqualHighColor : InpEqualLowColor;
-   DrawEqualRange("SMC_EQR",gEqualLabelId,first.time,second.time,first.price,clr);
-   DrawDottedLine("SMC_EQD",gEqualLabelId,first.time,second.time,first.price,clr);
-   DrawTextLabel("SMC_EQL",gEqualLabelId,second.time,second.price,clr,highLevel?"EQH":"EQL",highLevel?ANCHOR_UPPER:ANCHOR_LOWER);
+   DrawTextLabel("SMC_EQ",gEqualLabelId,second.time,second.price,clr,highLevel?"EQH":"EQL",highLevel?ANCHOR_UPPER:ANCHOR_LOWER);
+   double levelPrice = second.price;
    if(highLevel)
      {
-      SetBufferValue(gEqualHighBuffer,rates_total,second.index,first.price);
-      gLastEqualHighPrice = first.price;
+      SetBufferValue(gEqualHighBuffer,rates_total,second.index,levelPrice);
+      gLastEqualHighPrice = levelPrice;
       gLastEqualHighIndex = second.index;
      }
    else
      {
-      SetBufferValue(gEqualLowBuffer,rates_total,second.index,first.price);
-      gLastEqualLowPrice = first.price;
+      SetBufferValue(gEqualLowBuffer,rates_total,second.index,levelPrice);
+      gLastEqualLowPrice = levelPrice;
       gLastEqualLowIndex = second.index;
      }
   }
@@ -515,25 +467,26 @@ void UpdateFvgs(const double high,const double low)
 void RenderZones(const datetime latestTime,const long barSeconds)
   {
    datetime rightTime = latestTime + (datetime)(InpExtendRightBars*barSeconds);
-   if(InpShowFVG)
-     {
+  if(InpShowFVG)
+    {
       for(int i=0;i<ArraySize(gFvgZones);++i)
-         RenderZone(gFvgZones[i],"FVG_",gFvgZones[i].bullish?InpBullFVGColor:InpBearFVGColor,InpZoneOpacityActive,rightTime);
-     }
+         RenderZone(gFvgZones[i],"FVG_",InpFvgColor,InpZoneOpacityActive,rightTime);
+    }
    else
      {
       DeleteObjectByPrefix("FVG_");
       ArrayResize(gFvgZones,0);
      }
 
-   if(InpShowOrderBlocks)
-     {
+  if(InpShowOrderBlocks)
+    {
       for(int i=0;i<ArraySize(gObZones);++i)
         {
          int opacity = gObZones[i].mitigated ? InpZoneOpacityMitigated : InpZoneOpacityActive;
-         RenderZone(gObZones[i],"OB_",gObZones[i].bullish?InpBullOBColor:InpBearOBColor,opacity,rightTime);
+         color zoneColor = gObZones[i].bullish ? InpFvgColor : InpBearZoneColor;
+         RenderZone(gObZones[i],"OB_",zoneColor,opacity,rightTime);
         }
-     }
+    }
    else
      {
       DeleteObjectByPrefix("OB_");
@@ -545,6 +498,7 @@ void RenderZones(const datetime latestTime,const long barSeconds)
 void ConfigureBuffer(const int index,double &buffer[],const string label)
   {
    SetIndexBuffer(index,buffer,INDICATOR_DATA);
+   ArraySetAsSeries(buffer,true);
    PlotIndexSetInteger(index,PLOT_DRAW_TYPE,DRAW_NONE);
    PlotIndexSetString(index,PLOT_LABEL,label);
    PlotIndexSetInteger(index,PLOT_SHOW_DATA,true);
@@ -564,10 +518,10 @@ int OnInit()
    ConfigureBuffer(BUFFER_BULLISH_OB_LOW,gBullishOBLowBuffer,"Bull OB Low");
    ConfigureBuffer(BUFFER_BEARISH_OB_HIGH,gBearishOBHighBuffer,"Bear OB High");
    ConfigureBuffer(BUFFER_BEARISH_OB_LOW,gBearishOBLowBuffer,"Bear OB Low");
-   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFvgHighBuffer,"Bull FVG High");
-   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFvgLowBuffer,"Bull FVG Low");
-   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFvgHighBuffer,"Bear FVG High");
-   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFvgLowBuffer,"Bear FVG Low");
+   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFvgHighBuffer,"Bullish FVG High");
+   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFvgLowBuffer,"Bullish FVG Low");
+   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFvgHighBuffer,"Bearish FVG High");
+   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFvgLowBuffer,"Bearish FVG Low");
    ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighBuffer,"Equal High");
    ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowBuffer,"Equal Low");
    ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLgHighBuffer,"Liquidity Grab High");
@@ -580,6 +534,7 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    DeleteObjectByPrefix("SMC_STR");
+   DeleteObjectByPrefix("SMC_EQ");
    DeleteObjectByPrefix("SMC_EQR");
    DeleteObjectByPrefix("SMC_EQD");
    DeleteObjectByPrefix("SMC_EQL");
@@ -597,8 +552,6 @@ int OnCalculate(const int rates_total,
   {
    if(rates_total<=InpSwingLength*2)
       return(0);
-
-   EnsureBuffers(rates_total);
 
    MqlRates rates[];
    ArraySetAsSeries(rates,true);
@@ -635,6 +588,7 @@ int OnCalculate(const int rates_total,
      {
       ResetState();
       DeleteObjectByPrefix("SMC_STR");
+      DeleteObjectByPrefix("SMC_EQ");
       DeleteObjectByPrefix("SMC_EQR");
       DeleteObjectByPrefix("SMC_EQD");
       DeleteObjectByPrefix("SMC_EQL");
