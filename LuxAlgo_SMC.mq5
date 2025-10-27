@@ -3,12 +3,49 @@
 #property version   "1.00"
 #property indicator_chart_window
 #property indicator_buffers 16
-#property indicator_plots   0
+#property indicator_plots   16
+
+#property indicator_type1   DRAW_NONE
+#property indicator_type2   DRAW_NONE
+#property indicator_type3   DRAW_NONE
+#property indicator_type4   DRAW_NONE
+#property indicator_type5   DRAW_NONE
+#property indicator_type6   DRAW_NONE
+#property indicator_type7   DRAW_NONE
+#property indicator_type8   DRAW_NONE
+#property indicator_type9   DRAW_NONE
+#property indicator_type10  DRAW_NONE
+#property indicator_type11  DRAW_NONE
+#property indicator_type12  DRAW_NONE
+#property indicator_type13  DRAW_NONE
+#property indicator_type14  DRAW_NONE
+#property indicator_type15  DRAW_NONE
+#property indicator_type16  DRAW_NONE
 
 enum eLegDirection
   {
    LEG_BEARISH = 0,
    LEG_BULLISH = 1
+  };
+
+enum BufferIndex
+  {
+   BUFFER_BULLISH_BOS = 0,
+   BUFFER_BEARISH_BOS = 1,
+   BUFFER_BULLISH_CHOCH = 2,
+   BUFFER_BEARISH_CHOCH = 3,
+   BUFFER_BULLISH_OB_HIGH = 4,
+   BUFFER_BULLISH_OB_LOW = 5,
+   BUFFER_BEARISH_OB_HIGH = 6,
+   BUFFER_BEARISH_OB_LOW = 7,
+   BUFFER_BULLISH_FVG_HIGH = 8,
+   BUFFER_BULLISH_FVG_LOW = 9,
+   BUFFER_BEARISH_FVG_HIGH = 10,
+   BUFFER_BEARISH_FVG_LOW = 11,
+   BUFFER_EQ_HIGHS = 12,
+   BUFFER_EQ_LOWS = 13,
+   BUFFER_LIQUIDITY_GRAB_HIGH = 14,
+   BUFFER_LIQUIDITY_GRAB_LOW = 15
   };
 
 struct Pivot
@@ -206,44 +243,38 @@ void SetBufferValue(double &buffer[],int rates_total,int chronologicalIndex,doub
       buffer[shift] = value;
   }
 
+void ConfigureBuffer(const int bufferIndex,double &buffer[])
+  {
+   SetIndexBuffer(bufferIndex,buffer,INDICATOR_DATA);
+   PlotIndexSetInteger(bufferIndex,PLOT_DRAW_TYPE,DRAW_NONE);
+   PlotIndexSetInteger(bufferIndex,PLOT_LINE_COLOR,clrNONE);
+   PlotIndexSetInteger(bufferIndex,PLOT_LINE_STYLE,STYLE_SOLID);
+   PlotIndexSetInteger(bufferIndex,PLOT_LINE_WIDTH,1);
+   PlotIndexSetDouble(bufferIndex,PLOT_EMPTY_VALUE,EMPTY_VALUE);
+  }
+
 //+------------------------------------------------------------------+
 //| OnInit                                                           |
 //+------------------------------------------------------------------+
 int OnInit()
   {
    IndicatorSetString(INDICATOR_SHORTNAME,"LuxAlgo SMC");
-   SetIndexStyle(0,DRAW_NONE);
-   SetIndexBuffer(0,gBullishBOSBuffer,INDICATOR_DATA);
-   SetIndexStyle(1,DRAW_NONE);
-   SetIndexBuffer(1,gBearishBOSBuffer,INDICATOR_DATA);
-   SetIndexStyle(2,DRAW_NONE);
-   SetIndexBuffer(2,gBullishChoChBuffer,INDICATOR_DATA);
-   SetIndexStyle(3,DRAW_NONE);
-   SetIndexBuffer(3,gBearishChoChBuffer,INDICATOR_DATA);
-   SetIndexStyle(4,DRAW_NONE);
-   SetIndexBuffer(4,gBullishOBHighBuffer,INDICATOR_DATA);
-   SetIndexStyle(5,DRAW_NONE);
-   SetIndexBuffer(5,gBullishOBLowBuffer,INDICATOR_DATA);
-   SetIndexStyle(6,DRAW_NONE);
-   SetIndexBuffer(6,gBearishOBHighBuffer,INDICATOR_DATA);
-   SetIndexStyle(7,DRAW_NONE);
-   SetIndexBuffer(7,gBearishOBLowBuffer,INDICATOR_DATA);
-   SetIndexStyle(8,DRAW_NONE);
-   SetIndexBuffer(8,gBullishFVGHighBuffer,INDICATOR_DATA);
-   SetIndexStyle(9,DRAW_NONE);
-   SetIndexBuffer(9,gBullishFVGLowBuffer,INDICATOR_DATA);
-   SetIndexStyle(10,DRAW_NONE);
-   SetIndexBuffer(10,gBearishFVGHighBuffer,INDICATOR_DATA);
-   SetIndexStyle(11,DRAW_NONE);
-   SetIndexBuffer(11,gBearishFVGLowBuffer,INDICATOR_DATA);
-   SetIndexStyle(12,DRAW_NONE);
-   SetIndexBuffer(12,gEqualHighsBuffer,INDICATOR_DATA);
-   SetIndexStyle(13,DRAW_NONE);
-   SetIndexBuffer(13,gEqualLowsBuffer,INDICATOR_DATA);
-   SetIndexStyle(14,DRAW_NONE);
-   SetIndexBuffer(14,gLiquidityGrabHighBuffer,INDICATOR_DATA);
-   SetIndexStyle(15,DRAW_NONE);
-   SetIndexBuffer(15,gLiquidityGrabLowBuffer,INDICATOR_DATA);
+   ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBOSBuffer);
+   ConfigureBuffer(BUFFER_BEARISH_BOS,gBearishBOSBuffer);
+   ConfigureBuffer(BUFFER_BULLISH_CHOCH,gBullishChoChBuffer);
+   ConfigureBuffer(BUFFER_BEARISH_CHOCH,gBearishChoChBuffer);
+   ConfigureBuffer(BUFFER_BULLISH_OB_HIGH,gBullishOBHighBuffer);
+   ConfigureBuffer(BUFFER_BULLISH_OB_LOW,gBullishOBLowBuffer);
+   ConfigureBuffer(BUFFER_BEARISH_OB_HIGH,gBearishOBHighBuffer);
+   ConfigureBuffer(BUFFER_BEARISH_OB_LOW,gBearishOBLowBuffer);
+   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFVGHighBuffer);
+   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFVGLowBuffer);
+   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFVGHighBuffer);
+   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFVGLowBuffer);
+   ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighsBuffer);
+   ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowsBuffer);
+   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLiquidityGrabHighBuffer);
+   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLiquidityGrabLowBuffer);
    return(INIT_SUCCEEDED);
   }
 
