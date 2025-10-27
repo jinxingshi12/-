@@ -76,6 +76,16 @@ struct TrendBias
      }
   };
 
+struct FVGEvent
+  {
+   bool      bullish;
+   bool      active;
+   double    top;
+   double    bottom;
+   datetime  leftTime;
+   int       startIndex;
+  };
+
 input int      InpSwingLength             = 50;
 input int      InpInternalLength          = 5;
 input int      InpEqualLength             = 3;
@@ -86,7 +96,6 @@ input bool     InpShowFairValueGaps       = false;
 input bool     InpAutoFVGThreshold        = true;
 input ENUM_TIMEFRAMES InpFVGTimeframe     = PERIOD_CURRENT;
 input int      InpFVGExtend               = 1;
-input int      InpDataWindowDelaySeconds  = 30;
 
 // Style colors (approximation of TradingView palette)
 input color    InpBullStructureColor      = clrLimeGreen;
@@ -130,10 +139,6 @@ double      gLastEqualLow = 0.0;
 int         gLastEqualLowIndex = -1;
 double      gPointSize = 0.0;
 
-double      gLatestValues[16];
-int         gLatestIndex[16];
-bool        gLatestHasValue[16];
-datetime    gLastDataUpdateTime = 0;
 int         gLastBufferSize     = 0;
 
 //+------------------------------------------------------------------+
@@ -223,16 +228,6 @@ void ResetState()
    gLastEqualLowIndex  = -1;
   }
 
-void ResetLatestCache()
-  {
-   for(int i=0;i<16;++i)
-     {
-      gLatestValues[i]   = 0.0;
-      gLatestIndex[i]    = -1;
-      gLatestHasValue[i] = false;
-     }
-  }
-
 void EnsureBufferSize(double &buffer[],const int newSize)
   {
    int currentSize = ArraySize(buffer);
@@ -277,7 +272,7 @@ void EnsureAllBuffers(const int rates_total)
    gLastBufferSize = rates_total;
   }
 
-void WriteBufferValue(const int bufferIndex,const int rates_total,const int chronologicalIndex,const double value)
+void PushBufferValue(const int bufferIndex,const int rates_total,const int chronologicalIndex,const double value)
   {
    switch(bufferIndex)
      {
@@ -297,25 +292,6 @@ void WriteBufferValue(const int bufferIndex,const int rates_total,const int chro
       case BUFFER_EQ_LOWS:                SetBufferValue(gEqualLowsBuffer,rates_total,chronologicalIndex,value);       break;
       case BUFFER_LIQUIDITY_GRAB_HIGH:    SetBufferValue(gLiquidityGrabHighBuffer,rates_total,chronologicalIndex,value); break;
       case BUFFER_LIQUIDITY_GRAB_LOW:     SetBufferValue(gLiquidityGrabLowBuffer,rates_total,chronologicalIndex,value);  break;
-     }
-  }
-
-void RecordBufferValue(const int bufferIndex,const int chronologicalIndex,const double value)
-  {
-   if(bufferIndex < 0 || bufferIndex >= 16)
-      return;
-
-   gLatestValues[bufferIndex]    = value;
-   gLatestIndex[bufferIndex]     = chronologicalIndex;
-   gLatestHasValue[bufferIndex]  = true;
-  }
-
-void FlushLatestValues(const int rates_total)
-  {
-   for(int i=0;i<16;++i)
-     {
-      if(gLatestHasValue[i] && gLatestIndex[i] >= 0)
-         WriteBufferValue(i,rates_total,gLatestIndex[i],gLatestValues[i]);
      }
   }
 
@@ -454,8 +430,6 @@ int OnInit()
    IndicatorSetInteger(INDICATOR_DIGITS,_Digits);
 
    gPointSize = SymbolInfoDouble(_Symbol,SYMBOL_POINT);
-   ResetLatestCache();
-   gLastDataUpdateTime = 0;
    gLastBufferSize     = 0;
 
    ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBOSBuffer,DRAW_NONE,InpBullStructureColor,1,0,"Bullish BOS");
@@ -523,9 +497,6 @@ int OnCalculate(const int rates_total,
       timesChron[i]  = time[shift];
      }
 
-   if(prev_calculated==0)
-      ResetLatestCache();
-
    if(gPointSize<=0.0)
       gPointSize = SymbolInfoDouble(_Symbol,SYMBOL_POINT);
 
@@ -552,12 +523,41 @@ int OnCalculate(const int rates_total,
 
    datetime latestBarTime = timesChron[rates_total-1];
 
+   FVGEvent fvgEvents[];
+   ArrayResize(fvgEvents,0);
+
+   if(prev_calculated==0 && InpShowFairValueGaps)
+     {
+      ObjectsDeleteAll(0,"SMC_FVG_BULL");
+      ObjectsDeleteAll(0,"SMC_FVG_BEAR");
+     }
+
    ResetState();
 
    for(int i=0;i<rates_total;++i)
      {
       int swingLeg    = LegDirection(highsChron,lowsChron,i,InpSwingLength);
       int internalLeg = LegDirection(highsChron,lowsChron,i,InpInternalLength);
+
+      if(InpShowFairValueGaps)
+        {
+         int fvgCount = ArraySize(fvgEvents);
+         for(int f=0; f<fvgCount; ++f)
+           {
+            if(!fvgEvents[f].active)
+               continue;
+            if(fvgEvents[f].bullish)
+              {
+               if(lowsChron[i] <= fvgEvents[f].bottom)
+                  fvgEvents[f].active = false;
+              }
+            else
+              {
+               if(highsChron[i] >= fvgEvents[f].top)
+                  fvgEvents[f].active = false;
+              }
+           }
+        }
 
       bool newSwingPivot    = StartOfNewLeg(previousSwingLeg,swingLeg);
       bool newInternalPivot = StartOfNewLeg(previousInternalLeg,internalLeg);
@@ -588,15 +588,23 @@ int OnCalculate(const int rates_total,
       // Structure detection for internal trend
       if(gInternalHigh.barIndex>=0 && !gInternalHigh.crossed && closesChron[i] > gInternalHigh.currentLevel)
         {
+         bool choch = (gInternalTrend.bias == -1);
          gInternalHigh.crossed = true;
          gInternalTrend.bias   = 1;
-         RecordBufferValue(BUFFER_BULLISH_BOS,i,gInternalHigh.currentLevel);
+         if(choch)
+            PushBufferValue(BUFFER_BULLISH_CHOCH,rates_total,i,gInternalHigh.currentLevel);
+         else
+            PushBufferValue(BUFFER_BULLISH_BOS,rates_total,i,gInternalHigh.currentLevel);
         }
       if(gInternalLow.barIndex>=0 && !gInternalLow.crossed && closesChron[i] < gInternalLow.currentLevel)
         {
+         bool choch = (gInternalTrend.bias == 1);
          gInternalLow.crossed = true;
          gInternalTrend.bias  = -1;
-         RecordBufferValue(BUFFER_BEARISH_BOS,i,gInternalLow.currentLevel);
+         if(choch)
+            PushBufferValue(BUFFER_BEARISH_CHOCH,rates_total,i,gInternalLow.currentLevel);
+         else
+            PushBufferValue(BUFFER_BEARISH_BOS,rates_total,i,gInternalLow.currentLevel);
         }
 
       // Swing structures
@@ -611,13 +619,13 @@ int OnCalculate(const int rates_total,
 
          if(choch)
            {
-            RecordBufferValue(BUFFER_BULLISH_CHOCH,i,level);
+            PushBufferValue(BUFFER_BULLISH_CHOCH,rates_total,i,level);
             DrawStructureLabel("SMC_CHOCH_BULL_LBL",i,eventTime,level,InpBullStructureColor,"CHoCH",true);
             DrawStructureLine("SMC_CHOCH_BULL_LINE",gSwingHigh.barIndex,pivotTime,latestBarTime,level,InpBullStructureColor);
            }
          else
            {
-            RecordBufferValue(BUFFER_BULLISH_BOS,i,level);
+            PushBufferValue(BUFFER_BULLISH_BOS,rates_total,i,level);
             DrawStructureLabel("SMC_BOS_BULL_LBL",i,eventTime,level,InpBullStructureColor,"BOS",true);
             DrawStructureLine("SMC_BOS_BULL_LINE",gSwingHigh.barIndex,pivotTime,latestBarTime,level,InpBullStructureColor);
            }
@@ -637,8 +645,8 @@ int OnCalculate(const int rates_total,
                int minIndex = LowestIndex(lowsChron,startIndex,length);
                double obHigh = highsChron[maxIndex];
                double obLow  = lowsChron[minIndex];
-               RecordBufferValue(BUFFER_BULLISH_OB_HIGH,i,obHigh);
-               RecordBufferValue(BUFFER_BULLISH_OB_LOW,i,obLow);
+               PushBufferValue(BUFFER_BULLISH_OB_HIGH,rates_total,i,obHigh);
+               PushBufferValue(BUFFER_BULLISH_OB_LOW,rates_total,i,obLow);
                DrawRectangleZone("SMC_OB_BULL",startIndex,timesChron[startIndex],latestBarTime,obHigh,obLow,InpBullOrderBlockColor);
                DrawZoneLabel("SMC_OB_BULL_TAG",startIndex,latestBarTime,0.5*(obHigh+obLow),InpBullOrderBlockColor,"Bull OB");
               }
@@ -656,13 +664,13 @@ int OnCalculate(const int rates_total,
 
          if(choch)
            {
-            RecordBufferValue(BUFFER_BEARISH_CHOCH,i,level);
+            PushBufferValue(BUFFER_BEARISH_CHOCH,rates_total,i,level);
             DrawStructureLabel("SMC_CHOCH_BEAR_LBL",i,eventTime,level,InpBearStructureColor,"CHoCH",false);
             DrawStructureLine("SMC_CHOCH_BEAR_LINE",gSwingLow.barIndex,pivotTime,latestBarTime,level,InpBearStructureColor);
            }
          else
            {
-            RecordBufferValue(BUFFER_BEARISH_BOS,i,level);
+            PushBufferValue(BUFFER_BEARISH_BOS,rates_total,i,level);
             DrawStructureLabel("SMC_BOS_BEAR_LBL",i,eventTime,level,InpBearStructureColor,"BOS",false);
             DrawStructureLine("SMC_BOS_BEAR_LINE",gSwingLow.barIndex,pivotTime,latestBarTime,level,InpBearStructureColor);
            }
@@ -682,8 +690,8 @@ int OnCalculate(const int rates_total,
                int minIndex = LowestIndex(lowsChron,startIndex,length);
                double obHigh = highsChron[maxIndex];
                double obLow  = lowsChron[minIndex];
-               RecordBufferValue(BUFFER_BEARISH_OB_HIGH,i,obHigh);
-               RecordBufferValue(BUFFER_BEARISH_OB_LOW,i,obLow);
+               PushBufferValue(BUFFER_BEARISH_OB_HIGH,rates_total,i,obHigh);
+               PushBufferValue(BUFFER_BEARISH_OB_LOW,rates_total,i,obLow);
                DrawRectangleZone("SMC_OB_BEAR",startIndex,timesChron[startIndex],latestBarTime,obHigh,obLow,InpBearOrderBlockColor);
                DrawZoneLabel("SMC_OB_BEAR_TAG",startIndex,latestBarTime,0.5*(obHigh+obLow),InpBearOrderBlockColor,"Bear OB");
               }
@@ -695,7 +703,7 @@ int OnCalculate(const int rates_total,
       bool equalLowDetected  = false;
       if(i>=InpEqualLength && gSwingHigh.barIndex>=0 && MathAbs(highsChron[i]-gSwingHigh.currentLevel) <= InpEqualThreshold*gATRValue[i])
         {
-         RecordBufferValue(BUFFER_EQ_HIGHS,i,gSwingHigh.currentLevel);
+         PushBufferValue(BUFFER_EQ_HIGHS,rates_total,i,gSwingHigh.currentLevel);
          DrawEqualLevel("SMC_EQ_HIGH",gSwingHigh.barIndex,timesChron[gSwingHigh.barIndex],timesChron[i],gSwingHigh.currentLevel,"EQH",InpEqualLevelColor,true);
          gLastEqualHigh      = gSwingHigh.currentLevel;
          gLastEqualHighIndex = i;
@@ -703,7 +711,7 @@ int OnCalculate(const int rates_total,
         }
       if(i>=InpEqualLength && gSwingLow.barIndex>=0 && MathAbs(lowsChron[i]-gSwingLow.currentLevel) <= InpEqualThreshold*gATRValue[i])
         {
-         RecordBufferValue(BUFFER_EQ_LOWS,i,gSwingLow.currentLevel);
+         PushBufferValue(BUFFER_EQ_LOWS,rates_total,i,gSwingLow.currentLevel);
          DrawEqualLevel("SMC_EQ_LOW",gSwingLow.barIndex,timesChron[gSwingLow.barIndex],timesChron[i],gSwingLow.currentLevel,"EQL",InpEqualLevelColor,false);
          gLastEqualLow      = gSwingLow.currentLevel;
          gLastEqualLowIndex = i;
@@ -712,13 +720,13 @@ int OnCalculate(const int rates_total,
 
       if(!equalHighDetected && gLastEqualHighIndex>=0 && highsChron[i] > gLastEqualHigh && closesChron[i] < gLastEqualHigh)
         {
-         RecordBufferValue(BUFFER_LIQUIDITY_GRAB_HIGH,i,gLastEqualHigh);
+         PushBufferValue(BUFFER_LIQUIDITY_GRAB_HIGH,rates_total,i,gLastEqualHigh);
          DrawStructureLabel("SMC_LG_HIGH",i,timesChron[i],gLastEqualHigh,InpBearStructureColor,"LG",true);
          gLastEqualHighIndex = -1;
         }
       if(!equalLowDetected && gLastEqualLowIndex>=0 && lowsChron[i] < gLastEqualLow && closesChron[i] > gLastEqualLow)
         {
-         RecordBufferValue(BUFFER_LIQUIDITY_GRAB_LOW,i,gLastEqualLow);
+         PushBufferValue(BUFFER_LIQUIDITY_GRAB_LOW,rates_total,i,gLastEqualLow);
          DrawStructureLabel("SMC_LG_LOW",i,timesChron[i],gLastEqualLow,InpBullStructureColor,"LG",false);
          gLastEqualLowIndex = -1;
         }
@@ -738,54 +746,85 @@ int OnCalculate(const int rates_total,
          if(InpFVGTimeframe!=PERIOD_CURRENT && chartSeconds>0 && fvgSeconds>0)
            timeframeFactor = (double)fvgSeconds/chartSeconds;
          double threshold = InpAutoFVGThreshold ? gATRValue[i]*0.05*timeframeFactor : 0.0;
-         int    extendBars = (int)MathMax(0,InpFVGExtend);
 
          bool bullishFVG = currLow > last2High && lastClose > last2High && (lastClose-lastOpen) > threshold;
          bool bearishFVG = currHigh < last2Low && lastClose < last2Low && (lastOpen-lastClose) > threshold;
 
          if(bullishFVG)
            {
-            datetime endTime = latestBarTime;
-            if(extendBars>0)
-              {
-               int candidate = i + extendBars;
-               if(candidate > rates_total-1)
-                  candidate = rates_total-1;
-               endTime = timesChron[candidate];
-              }
-            RecordBufferValue(BUFFER_BULLISH_FVG_HIGH,i,currLow);
-            RecordBufferValue(BUFFER_BULLISH_FVG_LOW,i,last2High);
-            DrawRectangleZone("SMC_FVG_BULL",i,timesChron[i-1],endTime,currLow,last2High,InpBullFVGColor);
-            DrawZoneLabel("SMC_FVG_BULL_TAG",i,endTime,0.5*(currLow+last2High),InpBullFVGColor,"Bull FVG");
+            PushBufferValue(BUFFER_BULLISH_FVG_HIGH,rates_total,i,currLow);
+            PushBufferValue(BUFFER_BULLISH_FVG_LOW,rates_total,i,last2High);
+            int newIndex = ArraySize(fvgEvents);
+            ArrayResize(fvgEvents,newIndex+1);
+            fvgEvents[newIndex].bullish    = true;
+            fvgEvents[newIndex].active     = true;
+            fvgEvents[newIndex].top        = currLow;
+            fvgEvents[newIndex].bottom     = last2High;
+            fvgEvents[newIndex].leftTime   = timesChron[i-1];
+            fvgEvents[newIndex].startIndex = i;
            }
          if(bearishFVG)
            {
-            datetime endTime = latestBarTime;
-            if(extendBars>0)
-              {
-               int candidate = i + extendBars;
-               if(candidate > rates_total-1)
-                  candidate = rates_total-1;
-               endTime = timesChron[candidate];
-              }
-            RecordBufferValue(BUFFER_BEARISH_FVG_HIGH,i,last2Low);
-            RecordBufferValue(BUFFER_BEARISH_FVG_LOW,i,currHigh);
-            DrawRectangleZone("SMC_FVG_BEAR",i,timesChron[i-1],endTime,last2Low,currHigh,InpBearFVGColor);
-            DrawZoneLabel("SMC_FVG_BEAR_TAG",i,endTime,0.5*(last2Low+currHigh),InpBearFVGColor,"Bear FVG");
-           }
-        }
-
-      if(gLastDataUpdateTime==0 || (timesChron[i] - gLastDataUpdateTime) >= InpDataWindowDelaySeconds)
-        {
-         FlushLatestValues(rates_total);
-         gLastDataUpdateTime = timesChron[i];
+            PushBufferValue(BUFFER_BEARISH_FVG_HIGH,rates_total,i,last2Low);
+            PushBufferValue(BUFFER_BEARISH_FVG_LOW,rates_total,i,currHigh);
+            int newIndex = ArraySize(fvgEvents);
+            ArrayResize(fvgEvents,newIndex+1);
+            fvgEvents[newIndex].bullish    = false;
+            fvgEvents[newIndex].active     = true;
+            fvgEvents[newIndex].top        = last2Low;
+            fvgEvents[newIndex].bottom     = currHigh;
+            fvgEvents[newIndex].leftTime   = timesChron[i-1];
+            fvgEvents[newIndex].startIndex = i;
+          }
         }
      }
 
-   if(gLastDataUpdateTime==0 && rates_total>0)
+   // Render fair value gaps after processing all bars
+   if(InpShowFairValueGaps)
      {
-      FlushLatestValues(rates_total);
-      gLastDataUpdateTime = timesChron[rates_total-1];
+      int fvgCount = ArraySize(fvgEvents);
+      int extendBars = (int)MathMax(0,InpFVGExtend);
+      long barSpacing = 0;
+      if(rates_total>1)
+         barSpacing = (long)(timesChron[rates_total-1]-timesChron[rates_total-2]);
+      if(barSpacing<=0)
+         barSpacing = PeriodSeconds(Period());
+
+      for(int f=0; f<fvgCount; ++f)
+        {
+         string rectPrefix  = fvgEvents[f].bullish ? "SMC_FVG_BULL" : "SMC_FVG_BEAR";
+         string labelPrefix = fvgEvents[f].bullish ? "SMC_FVG_BULL_TAG" : "SMC_FVG_BEAR_TAG";
+
+         if(fvgEvents[f].active)
+           {
+            datetime rightTime = latestBarTime;
+            if(extendBars>0 && barSpacing>0)
+               rightTime += (datetime)(extendBars*barSpacing);
+
+            double top    = fvgEvents[f].top;
+            double bottom = fvgEvents[f].bottom;
+            if(top < bottom)
+              {
+               double tmp = top;
+               top        = bottom;
+               bottom     = tmp;
+              }
+
+            color zoneColor = fvgEvents[f].bullish ? InpBullFVGColor : InpBearFVGColor;
+            DrawRectangleZone(rectPrefix,f,fvgEvents[f].leftTime,rightTime,top,bottom,zoneColor);
+            DrawZoneLabel(labelPrefix,f,rightTime,0.5*(top+bottom),zoneColor,fvgEvents[f].bullish ? "Bull FVG" : "Bear FVG");
+           }
+         else
+           {
+            ObjectDelete(0,BuildObjectName(rectPrefix,f));
+            ObjectDelete(0,BuildObjectName(labelPrefix,f));
+           }
+        }
+     }
+   else
+     {
+      ObjectsDeleteAll(0,"SMC_FVG_BULL");
+      ObjectsDeleteAll(0,"SMC_FVG_BEAR");
      }
 
    return(rates_total);
