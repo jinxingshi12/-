@@ -114,6 +114,10 @@ TrendBias   gSwingTrend;
 TrendBias   gInternalTrend;
 
 double      gATRValue[];
+double      gLastEqualHigh = 0.0;
+int         gLastEqualHighIndex = -1;
+double      gLastEqualLow = 0.0;
+int         gLastEqualLowIndex = -1;
 
 //+------------------------------------------------------------------+
 //| Helper functions                                                |
@@ -223,6 +227,10 @@ void ResetState()
    gInternalLow.Reset();
    gSwingTrend.Reset();
    gInternalTrend.Reset();
+   gLastEqualHigh      = 0.0;
+   gLastEqualHighIndex = -1;
+   gLastEqualLow       = 0.0;
+   gLastEqualLowIndex  = -1;
   }
 
 void UpdatePivot(Pivot &ref,const double level,const datetime t,const int index)
@@ -243,14 +251,25 @@ void SetBufferValue(double &buffer[],int rates_total,int chronologicalIndex,doub
       buffer[shift] = value;
   }
 
-void ConfigureBuffer(const int bufferIndex,double &buffer[])
+void ConfigureBuffer(const int bufferIndex,
+                     double &buffer[],
+                     ENUM_DRAW_TYPE drawType,
+                     color lineColor,
+                     int lineWidth=1,
+                     int arrowCode=0,
+                     const string label="")
   {
    SetIndexBuffer(bufferIndex,buffer,INDICATOR_DATA);
-   PlotIndexSetInteger(bufferIndex,PLOT_DRAW_TYPE,DRAW_NONE);
-   PlotIndexSetInteger(bufferIndex,PLOT_LINE_COLOR,clrNONE);
+   PlotIndexSetInteger(bufferIndex,PLOT_DRAW_TYPE,drawType);
    PlotIndexSetInteger(bufferIndex,PLOT_LINE_STYLE,STYLE_SOLID);
-   PlotIndexSetInteger(bufferIndex,PLOT_LINE_WIDTH,1);
+   PlotIndexSetInteger(bufferIndex,PLOT_LINE_WIDTH,lineWidth);
+   PlotIndexSetInteger(bufferIndex,PLOT_LINE_COLOR,0,lineColor);
    PlotIndexSetDouble(bufferIndex,PLOT_EMPTY_VALUE,EMPTY_VALUE);
+   if(drawType==DRAW_ARROW && arrowCode!=0)
+      PlotIndexSetInteger(bufferIndex,PLOT_ARROW,arrowCode);
+   if(label!="")
+      PlotIndexSetString(bufferIndex,PLOT_LABEL,label);
+   PlotIndexSetInteger(bufferIndex,PLOT_SHOW_DATA,true);
   }
 
 //+------------------------------------------------------------------+
@@ -259,22 +278,27 @@ void ConfigureBuffer(const int bufferIndex,double &buffer[])
 int OnInit()
   {
    IndicatorSetString(INDICATOR_SHORTNAME,"LuxAlgo SMC");
-   ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBOSBuffer);
-   ConfigureBuffer(BUFFER_BEARISH_BOS,gBearishBOSBuffer);
-   ConfigureBuffer(BUFFER_BULLISH_CHOCH,gBullishChoChBuffer);
-   ConfigureBuffer(BUFFER_BEARISH_CHOCH,gBearishChoChBuffer);
-   ConfigureBuffer(BUFFER_BULLISH_OB_HIGH,gBullishOBHighBuffer);
-   ConfigureBuffer(BUFFER_BULLISH_OB_LOW,gBullishOBLowBuffer);
-   ConfigureBuffer(BUFFER_BEARISH_OB_HIGH,gBearishOBHighBuffer);
-   ConfigureBuffer(BUFFER_BEARISH_OB_LOW,gBearishOBLowBuffer);
-   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFVGHighBuffer);
-   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFVGLowBuffer);
-   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFVGHighBuffer);
-   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFVGLowBuffer);
-   ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighsBuffer);
-   ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowsBuffer);
-   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLiquidityGrabHighBuffer);
-   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLiquidityGrabLowBuffer);
+   IndicatorSetInteger(INDICATOR_DIGITS,_Digits);
+
+   ConfigureBuffer(BUFFER_BULLISH_BOS,gBullishBOSBuffer,DRAW_ARROW,clrLime,1,233,"Bullish BOS");
+   ConfigureBuffer(BUFFER_BEARISH_BOS,gBearishBOSBuffer,DRAW_ARROW,clrRed,1,234,"Bearish BOS");
+   ConfigureBuffer(BUFFER_BULLISH_CHOCH,gBullishChoChBuffer,DRAW_ARROW,clrSpringGreen,1,233,"Bullish CHoCH");
+   ConfigureBuffer(BUFFER_BEARISH_CHOCH,gBearishChoChBuffer,DRAW_ARROW,clrTomato,1,234,"Bearish CHoCH");
+
+   ConfigureBuffer(BUFFER_BULLISH_OB_HIGH,gBullishOBHighBuffer,DRAW_LINE,clrDeepSkyBlue,2,0,"Bullish OB High");
+   ConfigureBuffer(BUFFER_BULLISH_OB_LOW,gBullishOBLowBuffer,DRAW_LINE,clrDeepSkyBlue,2,0,"Bullish OB Low");
+   ConfigureBuffer(BUFFER_BEARISH_OB_HIGH,gBearishOBHighBuffer,DRAW_LINE,clrOrangeRed,2,0,"Bearish OB High");
+   ConfigureBuffer(BUFFER_BEARISH_OB_LOW,gBearishOBLowBuffer,DRAW_LINE,clrOrangeRed,2,0,"Bearish OB Low");
+
+   ConfigureBuffer(BUFFER_BULLISH_FVG_HIGH,gBullishFVGHighBuffer,DRAW_LINE,clrMediumSeaGreen,1,0,"Bullish FVG High");
+   ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFVGLowBuffer,DRAW_LINE,clrMediumSeaGreen,1,0,"Bullish FVG Low");
+   ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFVGHighBuffer,DRAW_LINE,clrCrimson,1,0,"Bearish FVG High");
+   ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFVGLowBuffer,DRAW_LINE,clrCrimson,1,0,"Bearish FVG Low");
+
+   ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighsBuffer,DRAW_ARROW,clrDodgerBlue,1,234,"Equal Highs");
+   ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowsBuffer,DRAW_ARROW,clrDodgerBlue,1,233,"Equal Lows");
+   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLiquidityGrabHighBuffer,DRAW_ARROW,clrGold,1,234,"Liquidity Grab High");
+   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLiquidityGrabLowBuffer,DRAW_ARROW,clrGold,1,233,"Liquidity Grab Low");
    return(INIT_SUCCEEDED);
   }
 
@@ -454,13 +478,32 @@ int OnCalculate(const int rates_total,
         }
 
       // Equal highs / lows detection
+      bool equalHighDetected = false;
+      bool equalLowDetected  = false;
       if(i>=InpEqualLength && gSwingHigh.barIndex>=0 && MathAbs(highsChron[i]-gSwingHigh.currentLevel) <= InpEqualThreshold*gATRValue[i])
         {
          SetBufferValue(gEqualHighsBuffer,rates_total,i,gSwingHigh.currentLevel);
+         gLastEqualHigh      = gSwingHigh.currentLevel;
+         gLastEqualHighIndex = i;
+         equalHighDetected   = true;
         }
       if(i>=InpEqualLength && gSwingLow.barIndex>=0 && MathAbs(lowsChron[i]-gSwingLow.currentLevel) <= InpEqualThreshold*gATRValue[i])
         {
          SetBufferValue(gEqualLowsBuffer,rates_total,i,gSwingLow.currentLevel);
+         gLastEqualLow      = gSwingLow.currentLevel;
+         gLastEqualLowIndex = i;
+         equalLowDetected   = true;
+        }
+
+      if(!equalHighDetected && gLastEqualHighIndex>=0 && highsChron[i] > gLastEqualHigh && closesChron[i] < gLastEqualHigh)
+        {
+         SetBufferValue(gLiquidityGrabHighBuffer,rates_total,i,gLastEqualHigh);
+         gLastEqualHighIndex = -1;
+        }
+      if(!equalLowDetected && gLastEqualLowIndex>=0 && lowsChron[i] < gLastEqualLow && closesChron[i] > gLastEqualLow)
+        {
+         SetBufferValue(gLiquidityGrabLowBuffer,rates_total,i,gLastEqualLow);
+         gLastEqualLowIndex = -1;
         }
 
       // Fair Value Gaps (simplified)
