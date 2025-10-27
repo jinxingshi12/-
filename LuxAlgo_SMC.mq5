@@ -213,6 +213,20 @@ void DrawTextLabel(const string prefix,const int id,const datetime t,const doubl
    ObjectSetString(0,name,OBJPROP_TEXT,text);
   }
 
+void DrawEqualMarker(const string prefix,const int id,const datetime t,const double price,const color clr,const bool highLevel)
+  {
+   string name = BuildName(prefix,id);
+   if(ObjectFind(0,name)<0)
+      ObjectCreate(0,name,OBJ_ARROW,0,t,price);
+   ObjectSetInteger(0,name,OBJPROP_TIME,0,t);
+   ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
+   ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,name,OBJPROP_ARROWCODE,highLevel?SYMBOL_ARROWDOWN:SYMBOL_ARROWUP);
+   ObjectSetInteger(0,name,OBJPROP_WIDTH,1);
+   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_HIDDEN,true);
+  }
+
 void DrawDottedLine(const string prefix,const int id,const datetime fromTime,const datetime toTime,const double price,const color clr)
   {
    string name = BuildName(prefix,id);
@@ -336,6 +350,7 @@ void RegisterEqualLevel(const SwingPoint &first,const SwingPoint &second,const b
    ++gEqualLabelId;
    color clr = highLevel ? InpEqualHighColor : InpEqualLowColor;
    DrawTextLabel("SMC_EQ",gEqualLabelId,second.time,second.price,clr,highLevel?"EQH":"EQL",highLevel?ANCHOR_UPPER:ANCHOR_LOWER);
+   DrawEqualMarker("SMC_EQM",gEqualLabelId,second.time,second.price,clr,highLevel);
    double levelPrice = second.price;
    if(highLevel)
      {
@@ -499,10 +514,14 @@ void ConfigureBuffer(const int index,double &buffer[],const string label)
   {
    SetIndexBuffer(index,buffer,INDICATOR_DATA);
    ArraySetAsSeries(buffer,true);
-   PlotIndexSetInteger(index,PLOT_DRAW_TYPE,DRAW_NONE);
+   PlotIndexSetInteger(index,PLOT_DRAW_TYPE,DRAW_LINE);
+   PlotIndexSetInteger(index,PLOT_LINE_COLOR,clrNONE);
+   PlotIndexSetInteger(index,PLOT_LINE_STYLE,STYLE_DOT);
+   PlotIndexSetInteger(index,PLOT_LINE_WIDTH,1);
    PlotIndexSetString(index,PLOT_LABEL,label);
    PlotIndexSetInteger(index,PLOT_SHOW_DATA,true);
    PlotIndexSetDouble(index,PLOT_EMPTY_VALUE,EMPTY_VALUE);
+   SetIndexEmptyValue(index,EMPTY_VALUE);
   }
 
 int OnInit()
@@ -538,6 +557,7 @@ void OnDeinit(const int reason)
    DeleteObjectByPrefix("SMC_EQR");
    DeleteObjectByPrefix("SMC_EQD");
    DeleteObjectByPrefix("SMC_EQL");
+   DeleteObjectByPrefix("SMC_EQM");
    DeleteObjectByPrefix("SMC_SWING");
    DeleteObjectByPrefix("SMC_LG");
    DeleteObjectByPrefix("OB_");
@@ -592,6 +612,7 @@ int OnCalculate(const int rates_total,
       DeleteObjectByPrefix("SMC_EQR");
       DeleteObjectByPrefix("SMC_EQD");
       DeleteObjectByPrefix("SMC_EQL");
+      DeleteObjectByPrefix("SMC_EQM");
       DeleteObjectByPrefix("SMC_SWING");
       DeleteObjectByPrefix("SMC_LG");
       DeleteObjectByPrefix("OB_");
