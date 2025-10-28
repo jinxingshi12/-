@@ -5,10 +5,22 @@
 
 /*
  * 智能交易结构（SMC）指标转换
- * - 识别 BOS / CHoCH / HHHL 等结构，并用虚线标注触发行
- * - 检测 EQH / EQL、订单块与三根蜡烛缺口（FVG）
- * - 所有输出按照既定缓冲区顺序写入数据窗口，方便脚本订阅
- * - 主要逻辑在收盘价确认后执行，避免历史回溯重绘
+ * ---------------------------------------------------------------------------
+ * ① OnInit 阶段：
+ *    - 配置 16 个缓冲区与 PlotIndexSet* 属性，使数据窗口与图表保持同步；
+ *    - 创建 ATR 指标句柄，为订单块提供体积过滤参考；
+ *    - 初始化内部状态与对象前缀，确保移除/加载指标时无残留。
+ * ② OnCalculate 主循环：
+ *    - 逐根收盘确认后依次检测摆动点、结构突破、等高/等低、缺口与订单块；
+ *    - 每当识别到有效信号，立刻写入对应缓冲区，并创建虚线、矩形或文本标签；
+ *    - 通过 ATR 阈值过滤过小的订单块、追踪缺口被回补即删除，避免图表拥挤。
+ * ③ OnDeinit 清理：
+ *    - 删除所有以 SMC_ 前缀创建的对象，释放 ATR 句柄，还原环境。
+ * ④ 辅助函数说明：
+ *    - RegisterEqualLevel / DrawEqualStructure 用于 EQH/EQL 虚线与文本；
+ *    - MarkStructure 负责 BOS/CHoCH 虚线、缓冲区与标签；
+ *    - AddOrderBlock / UpdateOrderBlocks 结合 ATR 判断、动态剔除失效区域；
+ *    - AddFvg / UpdateFvgs 记录缺口与触及后的清除逻辑。
  */
 #property indicator_buffers 16
 #property indicator_plots   16
@@ -424,26 +436,63 @@ void CheckEqualLow(const SwingPoint &current,const int rates_total)
      }
   }
 
+//--- 为等高/等低创建虚线与文本标签
+void DrawEqualStructure(const SwingPoint &first,const SwingPoint &second,const color clr,const bool highLevel)
+  {
+   // 计算文字居中的时间点（两个摆动点时间的平均值）
+   datetime midTime = first.time + (datetime)((second.time - first.time)/2);
+   // 采用两点价格的均值，保证虚线完全水平
+   double level = 0.5*(first.price + second.price);
+
+   // 虚线对象名称使用统一前缀，方便统一删除
+   string lineName = BuildName("SMC_EQSEG",gEqualLabelId);
+   if(ObjectFind(0,lineName)<0)
+      ObjectCreate(0,lineName,OBJ_TREND,0,first.time,level,second.time,level);
+   ObjectSetInteger(0,lineName,OBJPROP_TIME,0,first.time);
+   ObjectSetInteger(0,lineName,OBJPROP_TIME,1,second.time);
+   ObjectSetDouble(0,lineName,OBJPROP_PRICE,0,level);
+   ObjectSetDouble(0,lineName,OBJPROP_PRICE,1,level);
+   ObjectSetInteger(0,lineName,OBJPROP_STYLE,STYLE_DOT);
+   ObjectSetInteger(0,lineName,OBJPROP_WIDTH,1);
+   ObjectSetInteger(0,lineName,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,lineName,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,lineName,OBJPROP_RAY_RIGHT,false);
+   ObjectSetInteger(0,lineName,OBJPROP_HIDDEN,true);
+
+   // 文本标签采用 OBJ_TEXT，并设置锚点为中心，保证位于虚线上方/下方
+   string labelName = BuildName("SMC_EQ",gEqualLabelId);
+   if(ObjectFind(0,labelName)<0)
+      ObjectCreate(0,labelName,OBJ_TEXT,0,midTime,level);
+   ObjectSetInteger(0,labelName,OBJPROP_TIME,0,midTime);
+   ObjectSetDouble(0,labelName,OBJPROP_PRICE,0,level);
+   ObjectSetInteger(0,labelName,OBJPROP_COLOR,clr);
+   ObjectSetInteger(0,labelName,OBJPROP_FONTSIZE,8);
+   ObjectSetInteger(0,labelName,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,labelName,OBJPROP_HIDDEN,true);
+   ObjectSetInteger(0,labelName,OBJPROP_ANCHOR,ANCHOR_CENTER);
+   ObjectSetString(0,labelName,OBJPROP_TEXT,highLevel?"EQH":"EQL");
+  }
+
 //--- 记录等高/等低结构并同步缓冲区
 void RegisterEqualLevel(const SwingPoint &first,const SwingPoint &second,const bool highLevel,const int rates_total)
   {
-   ++gEqualLabelId;
-   color clr = highLevel ? InpEqualHighColor : InpEqualLowColor;
-   DrawTextLabel("SMC_EQ",gEqualLabelId,second.time,second.price,clr,highLevel?"EQH":"EQL",highLevel?ANCHOR_UPPER:ANCHOR_LOWER);
-   double levelPrice = second.price;
+   ++gEqualLabelId;                                                // 累加唯一编号，确保对象名称不重复
+   color clr = highLevel ? InpEqualHighColor : InpEqualLowColor;   // 根据高/低选择不同颜色
+   DrawEqualStructure(first,second,clr,highLevel);                 // 绘制虚线与文本
+   double levelPrice = 0.5*(first.price + second.price);           // 取均值写入缓冲区，保持水平
    if(highLevel)
      {
-      SetBufferValue(gEqualHighBuffer,rates_total,first.index,levelPrice);
-      SetBufferValue(gEqualHighBuffer,rates_total,second.index,levelPrice);
-      gLastEqualHighPrice = levelPrice;
-      gLastEqualHighIndex = second.index;
+      SetBufferValue(gEqualHighBuffer,rates_total,first.index,levelPrice);  // 第一摆动点写入等高数值
+      SetBufferValue(gEqualHighBuffer,rates_total,second.index,levelPrice); // 第二摆动点同样写入
+      gLastEqualHighPrice = levelPrice;                                     // 保存最后一次等高价格
+      gLastEqualHighIndex = second.index;                                   // 保存对应索引，用于后续流动性抓取
      }
    else
      {
-      SetBufferValue(gEqualLowBuffer,rates_total,first.index,levelPrice);
-      SetBufferValue(gEqualLowBuffer,rates_total,second.index,levelPrice);
-      gLastEqualLowPrice = levelPrice;
-      gLastEqualLowIndex = second.index;
+      SetBufferValue(gEqualLowBuffer,rates_total,first.index,levelPrice);   // 写入等低水平
+      SetBufferValue(gEqualLowBuffer,rates_total,second.index,levelPrice);  // 最新摆动点同步
+      gLastEqualLowPrice = levelPrice;                                      // 保存等低价格
+      gLastEqualLowIndex = second.index;                                    // 记录索引
      }
   }
 
@@ -461,7 +510,15 @@ void MarkStructure(const SwingPoint &pivot,const datetime eventTime,const bool b
   }
 
 //--- 根据最新结构突破生成订单块
-void AddOrderBlock(const int chronoIndex,const bool bullish,const double &opens[],const double &closes[],const datetime &times[],const double &atrValues[],const int rates_total)
+void AddOrderBlock(const int chronoIndex,          // 当前突破所在的时间索引
+                   const bool bullish,             // true 表示多头突破，false 表示空头突破
+                   const double &opens[],          // 开盘价数组（按时间顺序）
+                   const double &closes[],         // 收盘价数组（按时间顺序）
+                   const double &highs[],          // 最高价数组（用于计算蜡烛实体范围）
+                   const double &lows[],           // 最低价数组
+                   const datetime &times[],        // 时间戳数组
+                   const double &atrValues[],      // ATR 数组，提供过滤阈值
+                   const int rates_total)          // 总数据量
   {
    if(!InpShowOrderBlocks)
       return;
@@ -478,11 +535,15 @@ void AddOrderBlock(const int chronoIndex,const bool bullish,const double &opens[
          z.extendBars = InpExtendRightBars;
          z.mitigated = false;
          z.id = gNextZoneId++;
-         z.top = MathMax(opens[idx],closes[idx]);
-         z.bottom = MathMin(opens[idx],closes[idx]);
-         double zoneSize = MathAbs(z.top - z.bottom);             // 计算订单块实体高度
+         double candleHigh = highs[idx];
+         double candleLow  = lows[idx];
+         z.top = candleHigh;                                    // 多头订单块取该看跌蜡烛的最高价
+         z.bottom = candleLow;                                  // 底部使用最低价，保证包含完整实体
+         double zoneSize = MathAbs(candleHigh - candleLow);     // 订单块高度与蜡烛总幅度一致
          double atrValue = (idx<ArraySize(atrValues)) ? atrValues[idx] : 0.0; // 取对应 ATR
-         if(atrValue>0 && zoneSize < atrValue*InpMinObAtrMultiplier)         // 如果过小则忽略
+         if(atrValue<=0)
+            continue;                                           // ATR 尚未有效，跳过当前候选
+         if(zoneSize < atrValue*InpMinObAtrMultiplier)          // 通过 ATR 比例过滤过小订单块
             continue;
          PushZone(gObZones,z,"OB_");
          SetBufferValue(gBullishOBHighBuffer,rates_total,chronoIndex,z.top);
@@ -498,11 +559,15 @@ void AddOrderBlock(const int chronoIndex,const bool bullish,const double &opens[
          z.extendBars = InpExtendRightBars;
          z.mitigated = false;
          z.id = gNextZoneId++;
-         z.top = MathMax(opens[idx],closes[idx]);
-         z.bottom = MathMin(opens[idx],closes[idx]);
-         double zoneSize = MathAbs(z.top - z.bottom);
+         double candleHigh = highs[idx];
+         double candleLow  = lows[idx];
+         z.top = candleHigh;                                    // 空头订单块顶部仍采用蜡烛最高价
+         z.bottom = candleLow;                                  // 底部为最低价
+         double zoneSize = MathAbs(candleHigh - candleLow);
          double atrValue = (idx<ArraySize(atrValues)) ? atrValues[idx] : 0.0;
-         if(atrValue>0 && zoneSize < atrValue*InpMinObAtrMultiplier)
+         if(atrValue<=0)
+            continue;
+         if(zoneSize < atrValue*InpMinObAtrMultiplier)
             continue;
          PushZone(gObZones,z,"OB_");
          SetBufferValue(gBearishOBHighBuffer,rates_total,chronoIndex,z.top);
@@ -696,7 +761,8 @@ void OnDeinit(const int reason)
    DeleteObjectByPrefix("SMC_STRLINE");
    DeleteObjectByPrefix("SMC_STRLBL");
    // 删除等高/等低文本标签
-   DeleteObjectByPrefix("SMC_EQ");
+   DeleteObjectByPrefix("SMC_EQ");        // 删除等高/等低文本
+   DeleteObjectByPrefix("SMC_EQSEG");     // 删除等高/等低虚线
    // 删除等高/等低辅助矩形或线段（旧版本遗留）
    DeleteObjectByPrefix("SMC_EQR");
    DeleteObjectByPrefix("SMC_EQD");
@@ -791,12 +857,25 @@ int OnCalculate(const int rates_total,
    if(lastClosed<InpSwingLength)
       return(prev_calculated);
 
+   if(!InpShowEqualLevels)
+     {
+      DeleteObjectByPrefix("SMC_EQ");                     // 若关闭等高等低显示，则清理历史虚线与标签
+      DeleteObjectByPrefix("SMC_EQSEG");
+      ArrayInitialize(gEqualHighBuffer,EMPTY_VALUE);        // 重置缓冲区，避免旧数值滞留
+      ArrayInitialize(gEqualLowBuffer,EMPTY_VALUE);
+      gLastEqualHighIndex = -1;                             // 同时重置最后一次等高/等低记录
+      gLastEqualLowIndex  = -1;
+      gLastEqualHighPrice = 0.0;
+      gLastEqualLowPrice  = 0.0;
+     }
+
    if(prev_calculated==0)
      {
       ResetState();
       DeleteObjectByPrefix("SMC_STRLINE");
       DeleteObjectByPrefix("SMC_STRLBL");
       DeleteObjectByPrefix("SMC_EQ");
+      DeleteObjectByPrefix("SMC_EQSEG");
       DeleteObjectByPrefix("SMC_EQR");
       DeleteObjectByPrefix("SMC_EQD");
       DeleteObjectByPrefix("SMC_EQL");
@@ -862,7 +941,7 @@ int OnCalculate(const int rates_total,
          else
             SetBufferValue(gBullishBosBuffer,rates_total,chrono,gLastSwingHigh.price);
          MarkStructure(gLastSwingHigh,times[chrono],true,choch);
-         AddOrderBlock(chrono,true,opens,closes,times,gAtrValues,rates_total);
+         AddOrderBlock(chrono,true,opens,closes,highs,lows,times,gAtrValues,rates_total);
          gLastBrokenHighSource = gLastSwingHigh.index;
         }
       if(gLastSwingLow.index>=0 && close<gLastSwingLow.price && gLastSwingLow.index!=gLastBrokenLowSource)
@@ -876,7 +955,7 @@ int OnCalculate(const int rates_total,
          else
             SetBufferValue(gBearishBosBuffer,rates_total,chrono,gLastSwingLow.price);
          MarkStructure(gLastSwingLow,times[chrono],false,choch);
-         AddOrderBlock(chrono,false,opens,closes,times,gAtrValues,rates_total);
+         AddOrderBlock(chrono,false,opens,closes,highs,lows,times,gAtrValues,rates_total);
          gLastBrokenLowSource = gLastSwingLow.index;
         }
 
