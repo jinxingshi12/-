@@ -22,8 +22,8 @@
  *    - AddOrderBlock / UpdateOrderBlocks 结合 ATR 判断、动态剔除失效区域；
  *    - AddFvg / UpdateFvgs 记录缺口与触及后的清除逻辑。
  */
-#property indicator_buffers 16
-#property indicator_plots   16
+#property indicator_buffers 20
+#property indicator_plots   20
 
 #property indicator_type1   DRAW_NONE
 #property indicator_type2   DRAW_NONE
@@ -41,6 +41,10 @@
 #property indicator_type14  DRAW_NONE
 #property indicator_type15  DRAW_NONE
 #property indicator_type16  DRAW_NONE
+#property indicator_type17  DRAW_NONE
+#property indicator_type18  DRAW_NONE
+#property indicator_type19  DRAW_NONE
+#property indicator_type20  DRAW_NONE
 
 enum BufferIndex
   {
@@ -59,7 +63,11 @@ enum BufferIndex
    BUFFER_EQ_HIGHS = 12,
    BUFFER_EQ_LOWS = 13,
    BUFFER_LIQUIDITY_GRAB_HIGH = 14,
-   BUFFER_LIQUIDITY_GRAB_LOW = 15
+   BUFFER_LIQUIDITY_GRAB_LOW = 15,
+   BUFFER_SWING_BULLISH_BOS = 16,
+   BUFFER_SWING_BEARISH_BOS = 17,
+   BUFFER_SWING_BULLISH_CHOCH = 18,
+   BUFFER_SWING_BEARISH_CHOCH = 19
   };
 
 struct SwingPoint
@@ -123,6 +131,10 @@ input int      InpZoneOpacityMitigated = 25;           // 订单块被回测后�
  double gEqualLowBuffer[];
  double gLgHighBuffer[];
  double gLgLowBuffer[];
+ double gSwingBullishBosBuffer[];
+ double gSwingBearishBosBuffer[];
+ double gSwingBullishChochBuffer[];
+ double gSwingBearishChochBuffer[];
 
 //--- runtime state
 int        gLastProcessedIndex = -1;
@@ -140,6 +152,7 @@ int        gLastEqualLowIndex   = -1;
 int        gStructureLabelId    = 0;
 int        gEqualLabelId        = 0;
 int        gSwingLabelId        = 0;
+int        gSwingStructureLabelId = 0;
 int        gNextZoneId          = 0;
 long       gLastBarSeconds      = 0;
 int        gAtrHandle           = INVALID_HANDLE;   // ATR 指标句柄（订单块过滤）
@@ -149,6 +162,11 @@ Zone       gFvgZones[];
 SwingPoint gSwingHighHistory[];   // 记录历史摆动高点
 SwingPoint gSwingLowHistory[];    // 记录历史摆动低点
 double     gAtrValues[];          // ATR 数组缓存
+SwingPoint gSwingHighCandidate;   // 摆动结构（swing）待突破的高点
+SwingPoint gSwingLowCandidate;    // 摆动结构（swing）待跌破的低点
+int        gSwingTrendDirection = 0;      // swing 结构方向
+int        gSwingBrokenHighSource = -1;   // 最近一次 swing 高点突破来源索引
+int        gSwingBrokenLowSource  = -1;   // 最近一次 swing 低点跌破来源索引
 
 //--- helpers -----------------------------------------------------------------
 void ResetSwingPoint(SwingPoint &p)
@@ -165,18 +183,24 @@ void ResetState()
    gLastEqualHighPrice = 0.0;
    gLastEqualLowPrice  = 0.0;
    gLastEqualHighIndex = -1;
-   gLastEqualLowIndex  = -1;
-   gStructureLabelId   = 0;
-   gEqualLabelId       = 0;
-   gSwingLabelId       = 0;
-   gNextZoneId         = 0;
-   gLastBrokenHighSource = -1;
-   gLastBrokenLowSource  = -1;
-   gLastBarSeconds     = 0;
-   ResetSwingPoint(gLastSwingHigh);
-   ResetSwingPoint(gPrevSwingHigh);
-   ResetSwingPoint(gLastSwingLow);
-   ResetSwingPoint(gPrevSwingLow);
+  gLastEqualLowIndex  = -1;
+  gStructureLabelId   = 0;
+  gEqualLabelId       = 0;
+  gSwingLabelId       = 0;
+  gSwingStructureLabelId = 0;
+  gNextZoneId         = 0;
+  gLastBrokenHighSource = -1;
+  gLastBrokenLowSource  = -1;
+  gSwingBrokenHighSource = -1;
+  gSwingBrokenLowSource  = -1;
+  gLastBarSeconds     = 0;
+  gSwingTrendDirection = 0;
+  ResetSwingPoint(gLastSwingHigh);
+  ResetSwingPoint(gPrevSwingHigh);
+  ResetSwingPoint(gLastSwingLow);
+  ResetSwingPoint(gPrevSwingLow);
+  ResetSwingPoint(gSwingHighCandidate);
+  ResetSwingPoint(gSwingLowCandidate);
    ArrayResize(gObZones,0);
    ArrayResize(gFvgZones,0);
    ArrayResize(gSwingHighHistory,0);
@@ -218,10 +242,14 @@ void ClearBuffersAtIndex(const int rates_total,const int chronoIndex)
    SetBufferValue(gBullishFvgLowBuffer,rates_total,chronoIndex,EMPTY_VALUE);
    SetBufferValue(gBearishFvgHighBuffer,rates_total,chronoIndex,EMPTY_VALUE);
    SetBufferValue(gBearishFvgLowBuffer,rates_total,chronoIndex,EMPTY_VALUE);
-   SetBufferValue(gEqualHighBuffer,rates_total,chronoIndex,EMPTY_VALUE);
-   SetBufferValue(gEqualLowBuffer,rates_total,chronoIndex,EMPTY_VALUE);
-   SetBufferValue(gLgHighBuffer,rates_total,chronoIndex,EMPTY_VALUE);
-   SetBufferValue(gLgLowBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+  SetBufferValue(gEqualHighBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+  SetBufferValue(gEqualLowBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+  SetBufferValue(gLgHighBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+  SetBufferValue(gLgLowBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+  SetBufferValue(gSwingBullishBosBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+  SetBufferValue(gSwingBearishBosBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+  SetBufferValue(gSwingBullishChochBuffer,rates_total,chronoIndex,EMPTY_VALUE);
+  SetBufferValue(gSwingBearishChochBuffer,rates_total,chronoIndex,EMPTY_VALUE);
   }
 
 void DeleteObjectByPrefix(const string prefix)
@@ -249,7 +277,7 @@ void DrawTextLabel(const string prefix,const int id,const datetime t,const doubl
    ObjectSetString(0,name,OBJPROP_TEXT,text);
   }
 
-void DrawStructureLine(const string prefix,const int id,const datetime fromTime,const datetime toTime,const double price,const color clr)
+void DrawStructureLine(const string prefix,const int id,const datetime fromTime,const datetime toTime,const double price,const color clr,const ENUM_LINE_STYLE style,const int width)
   {
    string name = BuildName(prefix,id);
    if(ObjectFind(0,name)<0)
@@ -258,8 +286,8 @@ void DrawStructureLine(const string prefix,const int id,const datetime fromTime,
    ObjectSetInteger(0,name,OBJPROP_TIME,1,toTime);
    ObjectSetDouble(0,name,OBJPROP_PRICE,0,price);
    ObjectSetDouble(0,name,OBJPROP_PRICE,1,price);
-   ObjectSetInteger(0,name,OBJPROP_STYLE,STYLE_DOT);
-   ObjectSetInteger(0,name,OBJPROP_WIDTH,1);
+   ObjectSetInteger(0,name,OBJPROP_STYLE,style);
+   ObjectSetInteger(0,name,OBJPROP_WIDTH,width);
    ObjectSetInteger(0,name,OBJPROP_COLOR,clr);
    ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
    ObjectSetInteger(0,name,OBJPROP_RAY_RIGHT,false);
@@ -505,8 +533,21 @@ void MarkStructure(const SwingPoint &pivot,const datetime eventTime,const bool b
    color clr = bullish ? InpBullStructureColor : InpBearStructureColor;
    string text = choch?"CHoCH":"BOS";
    datetime labelTime = pivot.time + (eventTime - pivot.time)/2;
-   DrawStructureLine("SMC_STRLINE",gStructureLabelId,pivot.time,eventTime,pivot.price,clr);
+   DrawStructureLine("SMC_STRLINE",gStructureLabelId,pivot.time,eventTime,pivot.price,clr,STYLE_DOT,1);
    DrawTextLabel("SMC_STRLBL",gStructureLabelId,labelTime,pivot.price,clr,text,bullish?ANCHOR_LOWER:ANCHOR_UPPER);
+  }
+
+//--- 绘制 swing 结构用的实线与标签
+void MarkSwingStructure(const SwingPoint &pivot,const datetime eventTime,const bool bullish,const bool choch)
+  {
+   if(!InpShowStructure)
+      return;
+   ++gSwingStructureLabelId;                                       // 独立的计数器，避免与内部结构冲突
+   color clr = bullish ? InpBullStructureColor : InpBearStructureColor; // 根据方向确定颜色
+   string text = choch?"CHoCH":"BOS";                              // 文字说明
+   datetime labelTime = pivot.time + (eventTime - pivot.time)/2;      // 标签位于虚线中点
+   DrawStructureLine("SMC_SWSTRLINE",gSwingStructureLabelId,pivot.time,eventTime,pivot.price,clr,STYLE_SOLID,2); // 使用实线强调 swing 结构
+   DrawTextLabel("SMC_SWSTRLBL",gSwingStructureLabelId,labelTime,pivot.price,clr,text,bullish?ANCHOR_LOWER:ANCHOR_UPPER); // 绘制标签
   }
 
 //--- 根据最新结构突破生成订单块
@@ -744,10 +785,14 @@ int OnInit()
    ConfigureBuffer(BUFFER_BULLISH_FVG_LOW,gBullishFvgLowBuffer,"Bullish FVG Low",InpFvgColor);      // 看涨 FVG 下沿
    ConfigureBuffer(BUFFER_BEARISH_FVG_HIGH,gBearishFvgHighBuffer,"Bearish FVG High",InpFvgColor);   // 看跌 FVG 上沿
    ConfigureBuffer(BUFFER_BEARISH_FVG_LOW,gBearishFvgLowBuffer,"Bearish FVG Low",InpFvgColor);      // 看跌 FVG 下沿
-   ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighBuffer,"Equal High",InpEqualHighColor);                // 等高价位
-   ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowBuffer,"Equal Low",InpEqualLowColor);                   // 等低价位
-   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLgHighBuffer,"Liquidity Grab High",InpBearStructureColor); // 流动性抓取高点
-   ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLgLowBuffer,"Liquidity Grab Low",InpBullStructureColor);   // 流动性抓取低点
+  ConfigureBuffer(BUFFER_EQ_HIGHS,gEqualHighBuffer,"Equal High",InpEqualHighColor);                // 等高价位
+  ConfigureBuffer(BUFFER_EQ_LOWS,gEqualLowBuffer,"Equal Low",InpEqualLowColor);                   // 等低价位
+  ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_HIGH,gLgHighBuffer,"Liquidity Grab High",InpBearStructureColor); // 流动性抓取高点
+  ConfigureBuffer(BUFFER_LIQUIDITY_GRAB_LOW,gLgLowBuffer,"Liquidity Grab Low",InpBullStructureColor);   // 流动性抓取低点
+  ConfigureBuffer(BUFFER_SWING_BULLISH_BOS,gSwingBullishBosBuffer,"Swing Bullish BOS",InpBullStructureColor);          // swing 多头 BOS
+  ConfigureBuffer(BUFFER_SWING_BEARISH_BOS,gSwingBearishBosBuffer,"Swing Bearish BOS",InpBearStructureColor);          // swing 空头 BOS
+  ConfigureBuffer(BUFFER_SWING_BULLISH_CHOCH,gSwingBullishChochBuffer,"Swing Bullish CHoCH",InpBullStructureColor);    // swing 多头 CHoCH
+  ConfigureBuffer(BUFFER_SWING_BEARISH_CHOCH,gSwingBearishChochBuffer,"Swing Bearish CHoCH",InpBearStructureColor);    // swing 空头 CHoCH
 
    // 重置内部状态，确保指标从干净的缓存开始运行
    ResetState();
@@ -758,8 +803,10 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    // 删除结构相关的文字与虚线，避免在移除指标后残留
-   DeleteObjectByPrefix("SMC_STRLINE");
-   DeleteObjectByPrefix("SMC_STRLBL");
+  DeleteObjectByPrefix("SMC_STRLINE");
+  DeleteObjectByPrefix("SMC_STRLBL");
+  DeleteObjectByPrefix("SMC_SWSTRLINE");
+  DeleteObjectByPrefix("SMC_SWSTRLBL");
    // 删除等高/等低文本标签
    DeleteObjectByPrefix("SMC_EQ");        // 删除等高/等低文本
    DeleteObjectByPrefix("SMC_EQSEG");     // 删除等高/等低虚线
@@ -874,6 +921,8 @@ int OnCalculate(const int rates_total,
       ResetState();
       DeleteObjectByPrefix("SMC_STRLINE");
       DeleteObjectByPrefix("SMC_STRLBL");
+      DeleteObjectByPrefix("SMC_SWSTRLINE");
+      DeleteObjectByPrefix("SMC_SWSTRLBL");
       DeleteObjectByPrefix("SMC_EQ");
       DeleteObjectByPrefix("SMC_EQSEG");
       DeleteObjectByPrefix("SMC_EQR");
@@ -906,6 +955,8 @@ int OnCalculate(const int rates_total,
            newHigh.price = highs[pivot];
            newHigh.time  = times[pivot];
            gLastSwingHigh = newHigh;
+           if(gPrevSwingHigh.index>=0)
+              gSwingHighCandidate = gPrevSwingHigh;                 // 记录上一个摆动高点，等待 swing 突破
            double prevPrice = (gPrevSwingHigh.index>=0) ? gPrevSwingHigh.price : 0.0;
            RegisterSwingLabel(newHigh,true,prevPrice);
            CheckEqualHigh(newHigh,rates_total);
@@ -919,6 +970,8 @@ int OnCalculate(const int rates_total,
            newLow.price = lows[pivot];
            newLow.time  = times[pivot];
            gLastSwingLow = newLow;
+           if(gPrevSwingLow.index>=0)
+              gSwingLowCandidate = gPrevSwingLow;                   // 记录上一个摆动低点，等待 swing 跌破
            double prevPrice = (gPrevSwingLow.index>=0) ? gPrevSwingLow.price : 0.0;
            RegisterSwingLabel(newLow,false,prevPrice);
            CheckEqualLow(newLow,rates_total);
@@ -957,6 +1010,38 @@ int OnCalculate(const int rates_total,
          MarkStructure(gLastSwingLow,times[chrono],false,choch);
          AddOrderBlock(chrono,false,opens,closes,highs,lows,times,gAtrValues,rates_total);
          gLastBrokenLowSource = gLastSwingLow.index;
+        }
+
+      if(gSwingHighCandidate.index>=0 && close>gSwingHighCandidate.price && gSwingHighCandidate.index!=gSwingBrokenHighSource)
+        {
+         bool swingChoch = (gSwingTrendDirection<=0);
+         if(swingChoch && !InpShowChoCh)
+            swingChoch = false;
+         gSwingTrendDirection = 1;
+         double level = gSwingHighCandidate.price;
+         if(swingChoch)
+            SetBufferValue(gSwingBullishChochBuffer,rates_total,chrono,level);
+         else
+            SetBufferValue(gSwingBullishBosBuffer,rates_total,chrono,level);
+         MarkSwingStructure(gSwingHighCandidate,times[chrono],true,swingChoch);
+         gSwingBrokenHighSource = gSwingHighCandidate.index;
+         ResetSwingPoint(gSwingHighCandidate);
+        }
+
+      if(gSwingLowCandidate.index>=0 && close<gSwingLowCandidate.price && gSwingLowCandidate.index!=gSwingBrokenLowSource)
+        {
+         bool swingChoch = (gSwingTrendDirection>=0);
+         if(swingChoch && !InpShowChoCh)
+            swingChoch = false;
+         gSwingTrendDirection = -1;
+         double level = gSwingLowCandidate.price;
+         if(swingChoch)
+            SetBufferValue(gSwingBearishChochBuffer,rates_total,chrono,level);
+         else
+            SetBufferValue(gSwingBearishBosBuffer,rates_total,chrono,level);
+         MarkSwingStructure(gSwingLowCandidate,times[chrono],false,swingChoch);
+         gSwingBrokenLowSource = gSwingLowCandidate.index;
+         ResetSwingPoint(gSwingLowCandidate);
         }
 
       if(gLastEqualHighIndex>=0 && high>gLastEqualHighPrice && close<gLastEqualHighPrice)
